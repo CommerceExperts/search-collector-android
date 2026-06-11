@@ -6,7 +6,7 @@
 
 <p align="center">
     <a href="#" target="_blank"><img src="https://github.com/CommerceExperts/search-collector-android/actions/workflows/ci.yml/badge.svg" alt="build workflow" /></a>
-    <a href="https://github.com/CommerceExperts/search-collector-android/blob/master/LICENSE" target="_blank"><img src="https://img.shields.io/github/license/CommerceExperts/search-collector-android" alt="license" /></a>
+    <a href="https://github.com/CommerceExperts/search-collector-android/blob/main/LICENSE" target="_blank"><img src="https://img.shields.io/github/license/CommerceExperts/search-collector-android" alt="license" /></a>
     <a href="https://twitter.com/cxpsearchhub" target="_blank"><img src="https://img.shields.io/twitter/follow/cxpsearchhub?style=social" alt="twitter" /></a>
 </p>
 
