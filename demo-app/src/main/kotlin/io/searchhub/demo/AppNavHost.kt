@@ -6,6 +6,8 @@ import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -76,8 +78,12 @@ fun AppNavHost() {
                 }
             }
         }
-    ) { _ ->
-        NavHost(navController = navController, startDestination = "search") {
+    ) { innerPadding ->
+        NavHost(
+            navController = navController,
+            startDestination = "search",
+            modifier = Modifier.padding(innerPadding)
+        ) {
             composable("search") {
                 SearchScreen(
                     onSearch = { keywords ->
