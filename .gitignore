@@ -1,0 +1,32 @@
+# Gradle build output
+build/
+.gradle/
+*/build/
+*/.gradle/
+
+# Gradle wrapper (keep if checked in, ignore if not)
+# gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+local.properties
+
+# Kotlin compiler caches
+.kotlin/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Test reports and coverage
+*/build/reports/
+*/build/test-results/
+*/build/outputs/
+
+# AAR / JAR artifacts
+*.aar
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
