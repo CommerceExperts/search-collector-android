@@ -1,6 +1,6 @@
 ---
 type: fix
-status: active
+status: completed
 origin: docs/brainstorms/2026-06-12-trail-store-proactive-expiry-requirements.md
 created: 2026-06-12
 ---
