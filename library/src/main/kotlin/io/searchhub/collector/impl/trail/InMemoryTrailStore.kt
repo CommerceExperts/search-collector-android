@@ -12,6 +12,7 @@ class InMemoryTrailStore(private val ttlMs: Long = DEFAULT_TTL_MS) : TrailStore 
 
     override suspend fun register(key: String, query: String, trailType: TrailType) {
         synchronized(trails) {
+            purgeExpired()
             trails[key] = TrailData(
                 timestamp = System.currentTimeMillis(),
                 query = query,
@@ -23,11 +24,18 @@ class InMemoryTrailStore(private val ttlMs: Long = DEFAULT_TTL_MS) : TrailStore 
     override suspend fun get(key: String): TrailData? {
         synchronized(trails) {
             val trail = trails[key] ?: return null
-            if (System.currentTimeMillis() - trail.timestamp > ttlMs) {
+            if (isExpired(trail.timestamp)) {
                 trails.remove(key)
                 return null
             }
             return trail
         }
     }
+
+    private fun purgeExpired() {
+        val now = System.currentTimeMillis()
+        trails.entries.removeAll { now - it.value.timestamp > ttlMs }
+    }
+
+    private fun isExpired(timestamp: Long) = System.currentTimeMillis() - timestamp > ttlMs
 }
