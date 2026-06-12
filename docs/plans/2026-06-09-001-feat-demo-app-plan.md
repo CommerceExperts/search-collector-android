@@ -1,7 +1,7 @@
 ---
 title: "feat: Add :demo-app module for interactive SDK integration testing"
 type: feat
-status: active
+status: completed
 date: 2026-06-09
 origin: docs/brainstorms/2026-06-09-demo-app-requirements.md
 ---
