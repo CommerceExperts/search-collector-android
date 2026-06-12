@@ -35,12 +35,10 @@ class SharedPreferencesTrailStore(
     private fun purgeExpired() {
         val all = prefs.all
         if (all.isEmpty()) return
-        val now = System.currentTimeMillis()
         val expired = all.keys.filter { key ->
             runCatching {
-                val timestamp = JSONObject(all[key] as String).getLong("timestamp")
-                now - timestamp > ttlMs
-            }.getOrDefault(false)
+                isExpired(JSONObject(all[key] as String).getLong("timestamp"))
+            }.getOrDefault(true) // on error we treat it as expired
         }
         if (expired.isEmpty()) return
         val editor = prefs.edit()
@@ -48,12 +46,14 @@ class SharedPreferencesTrailStore(
         editor.apply()
     }
 
+    private fun isExpired(timestamp: Long) = System.currentTimeMillis() - timestamp > ttlMs
+
     override suspend fun get(key: String): TrailData? {
         val raw = prefs.getString(key, null) ?: return null
         return runCatching {
             val json = JSONObject(raw)
             val timestamp = json.getLong("timestamp")
-            if (System.currentTimeMillis() - timestamp > ttlMs) {
+            if (isExpired(timestamp)) {
                 prefs.edit().remove(key).apply()
                 return null
             }
