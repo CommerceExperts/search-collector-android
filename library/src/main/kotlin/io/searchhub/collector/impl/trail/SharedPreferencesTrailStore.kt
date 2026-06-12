@@ -18,13 +18,34 @@ class SharedPreferencesTrailStore(
     private val prefs: SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    init {
+        purgeExpired()
+    }
+
     override suspend fun register(key: String, query: String, trailType: TrailType) {
+        purgeExpired()
         val json = JSONObject().apply {
             put("timestamp", System.currentTimeMillis())
             put("query", query)
             put("type", trailType.value)
         }
         prefs.edit().putString(key, json.toString()).apply()
+    }
+
+    private fun purgeExpired() {
+        val all = prefs.all
+        if (all.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val expired = all.keys.filter { key ->
+            runCatching {
+                val timestamp = JSONObject(all[key] as String).getLong("timestamp")
+                now - timestamp > ttlMs
+            }.getOrDefault(false)
+        }
+        if (expired.isEmpty()) return
+        val editor = prefs.edit()
+        expired.forEach { editor.remove(it) }
+        editor.apply()
     }
 
     override suspend fun get(key: String): TrailData? {
