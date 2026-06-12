@@ -1,7 +1,7 @@
 ---
 title: "feat: Extend SDK test coverage"
 date: 2026-06-08
-status: active
+status: completed
 ---
 
 # feat: Extend SDK test coverage

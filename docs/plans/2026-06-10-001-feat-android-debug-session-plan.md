@@ -1,6 +1,6 @@
 ---
 title: "feat: Add Android debug-session support"
-status: active
+status: completed
 date: 2026-06-10
 origin: docs/brainstorms/2026-06-10-android-debug-session-requirements.md
 ---
