@@ -68,4 +68,40 @@ class SharedPreferencesTrailStoreTest {
         assertEquals("\$s=second/", trail!!.query)
         assertEquals(TrailType.ASSOCIATED, trail.type)
     }
+
+    @Test
+    fun `init block purges expired entries from previous session`() = runTest {
+        val prefs = context.getSharedPreferences("SearchCollectorTrail", Context.MODE_PRIVATE)
+        val expired = org.json.JSONObject().apply {
+            put("timestamp", System.currentTimeMillis() - 100)
+            put("query", "\$s=old/")
+            put("type", TrailType.MAIN.value)
+        }
+        prefs.edit().putString("old-prod", expired.toString()).apply()
+        SharedPreferencesTrailStore(context, ttlMs = 10L)
+        assertNull(prefs.getString("old-prod", null))
+    }
+
+    @Test
+    fun `expired entry is purged by register() without get() call`() = runTest {
+        val prefs = context.getSharedPreferences("SearchCollectorTrail", Context.MODE_PRIVATE)
+        val store = SharedPreferencesTrailStore(context, ttlMs = 1L)
+        store.register("prod-5", "\$s=boots/", TrailType.MAIN)
+        Thread.sleep(10)
+        store.register("prod-6", "\$s=hats/", TrailType.MAIN)
+        assertNull(prefs.getString("prod-5", null))
+        assertNotNull(prefs.getString("prod-6", null))
+    }
+
+    @Test
+    fun `non-expired entries survive register()`() = runTest {
+        val prefs = context.getSharedPreferences("SearchCollectorTrail", Context.MODE_PRIVATE)
+        val store = SharedPreferencesTrailStore(context)
+        store.register("prod-7", "\$s=coats/", TrailType.MAIN)
+        store.register("prod-8", "\$s=gloves/", TrailType.ASSOCIATED)
+        store.register("prod-9", "\$s=scarves/", TrailType.MAIN)
+        assertNotNull(prefs.getString("prod-7", null))
+        assertNotNull(prefs.getString("prod-8", null))
+        assertNotNull(prefs.getString("prod-9", null))
+    }
 }
