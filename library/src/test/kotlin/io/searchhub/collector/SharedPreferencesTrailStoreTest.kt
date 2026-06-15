@@ -1,6 +1,7 @@
 package io.searchhub.collector
 
 import android.content.Context
+import io.searchhub.collector.impl.trail.PREFS_NAME
 import io.searchhub.collector.impl.trail.SharedPreferencesTrailStore
 import io.searchhub.collector.model.TrailType
 import kotlinx.coroutines.test.runTest
@@ -18,7 +19,7 @@ class SharedPreferencesTrailStoreTest {
 
     @Before
     fun clearPrefs() {
-        context.getSharedPreferences("SearchCollectorTrail", Context.MODE_PRIVATE)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().clear().apply()
     }
 
@@ -45,7 +46,7 @@ class SharedPreferencesTrailStoreTest {
         Thread.sleep(10)
         assertNull(store.get("prod-2"))
         assertNull(
-            context.getSharedPreferences("SearchCollectorTrail", Context.MODE_PRIVATE)
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getString("prod-2", null)
         )
     }
@@ -71,7 +72,7 @@ class SharedPreferencesTrailStoreTest {
 
     @Test
     fun `init block purges expired entries from previous session`() = runTest {
-        val prefs = context.getSharedPreferences("SearchCollectorTrail", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val expired = org.json.JSONObject().apply {
             put("timestamp", System.currentTimeMillis() - 100)
             put("query", "\$s=old/")
@@ -84,7 +85,7 @@ class SharedPreferencesTrailStoreTest {
 
     @Test
     fun `expired entry is purged by register() without get() call`() = runTest {
-        val prefs = context.getSharedPreferences("SearchCollectorTrail", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val store = SharedPreferencesTrailStore(context, ttlMs = 1L)
         store.register("prod-5", "\$s=boots/", TrailType.MAIN)
         Thread.sleep(10)
@@ -95,7 +96,7 @@ class SharedPreferencesTrailStoreTest {
 
     @Test
     fun `non-expired entries survive register()`() = runTest {
-        val prefs = context.getSharedPreferences("SearchCollectorTrail", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val store = SharedPreferencesTrailStore(context)
         store.register("prod-7", "\$s=coats/", TrailType.MAIN)
         store.register("prod-8", "\$s=gloves/", TrailType.ASSOCIATED)
