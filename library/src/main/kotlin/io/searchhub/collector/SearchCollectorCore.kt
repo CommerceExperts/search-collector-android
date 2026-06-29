@@ -31,6 +31,10 @@ internal class SearchCollectorCore(
         startAutoFlush()
     }
 
+    fun setContext(url: String, referrer: String) {
+        contextProvider.setContext(url, referrer)
+    }
+
     internal fun launch(block: suspend () -> Unit): Job = scope.launch {
         runCatching { block() }.onFailure { err ->
             this@SearchCollectorCore.logger.error("Tracking error", err)

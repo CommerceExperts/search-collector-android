@@ -73,4 +73,21 @@ class AndroidContextProviderTest {
         assertEquals("", provider.getCurrentUrl())
         assertEquals("", provider.getReferrer())
     }
+
+    @Test
+    fun `setContext updates getCurrentUrl and getReferrer`() = runTest {
+        val provider = AndroidContextProvider(context)
+        provider.setContext("pdp/42", "search/results")
+        assertEquals("pdp/42", provider.getCurrentUrl())
+        assertEquals("search/results", provider.getReferrer())
+    }
+
+    @Test
+    fun `setContext overwrites previously set url and referrer`() = runTest {
+        val provider = AndroidContextProvider(context)
+        provider.setContext("screen-a", "intro")
+        provider.setContext("screen-b", "screen-a")
+        assertEquals("screen-b", provider.getCurrentUrl())
+        assertEquals("screen-a", provider.getReferrer())
+    }
 }

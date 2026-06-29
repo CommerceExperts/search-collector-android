@@ -1,7 +1,7 @@
 ---
 date: 2026-06-26
 type: feat
-status: active
+status: completed
 origin: docs/brainstorms/2026-06-26-sdk-integration-improvements-requirements.md
 ---
 

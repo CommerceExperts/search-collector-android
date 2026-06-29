@@ -22,6 +22,7 @@ data class SearchCollectorConfig(
 data class QueueSettings(
     val batchIntervalMs: Long = 5_000L,
     val maxBatchSize: Int = 10,
+    val maxPendingActions: Int = 250,
 )
 
 data class DebugRoutingSettings(

@@ -53,12 +53,13 @@ class SearchCollectorCoreTest {
         eventQueue: InMemoryEventQueue = queue,
         transport: Transport = fakeTransport,
         sessionStore: SessionStore = InMemorySessionStore(),
+        contextProvider: ContextProvider = fakeContext,
     ) = SearchCollectorCore(
         transport = transport,
         sessionStore = sessionStore,
         trailStore = trailStore,
         eventQueue = eventQueue,
-        contextProvider = fakeContext,
+        contextProvider = contextProvider,
         timestampProvider = SystemTimestampProvider(),
         channel = "de",
         maxBatchSize = 10,
@@ -348,6 +349,29 @@ class SearchCollectorCoreTest {
         c.trackSearch("shoes", 5, SearchAction.SEARCH)
         val event = queue.drain()[0]
         assertEquals("debug-token", event.session)
+        c.dispose()
+    }
+
+    // --- setContext ---
+
+    @Test
+    fun `setContext updates url and ref on subsequent events`() = runTest {
+        val mutableContext = object : ContextProvider {
+            private var url = ""
+            private var ref = ""
+            override suspend fun getCurrentUrl() = url
+            override suspend fun getReferrer() = ref
+            override suspend fun getUserAgent() = "TestAgent"
+            override suspend fun isTouchDevice() = true
+            override suspend fun getLanguage() = "de-DE"
+            override fun setContext(url: String, referrer: String) { this.url = url; this.ref = referrer }
+        }
+        val c = makeCore(contextProvider = mutableContext)
+        c.setContext("pdp/123", "search/results")
+        c.trackFiredSearch("jeans")
+        val event = queue.drain()[0] as SearchCollectorEvent.FiredSearch
+        assertEquals("pdp/123", event.url)
+        assertEquals("search/results", event.ref)
         c.dispose()
     }
 

@@ -6,4 +6,5 @@ interface ContextProvider {
     suspend fun getUserAgent(): String
     suspend fun isTouchDevice(): Boolean
     suspend fun getLanguage(): String
+    fun setContext(url: String, referrer: String) {}
 }

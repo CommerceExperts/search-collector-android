@@ -3,11 +3,13 @@ package io.searchhub.collector
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import io.searchhub.collector.impl.queue.InMemoryEventQueue
 import io.searchhub.collector.impl.session.InMemorySessionStore
 import io.searchhub.collector.impl.timestamp.SystemTimestampProvider
 import io.searchhub.collector.impl.trail.InMemoryTrailStore
 import io.searchhub.collector.impl.transport.ShSqsTransport
+import io.searchhub.collector.interfaces.ContextProvider
 import io.searchhub.collector.interfaces.Transport
 import io.searchhub.collector.interfaces.silentLogger
 import io.searchhub.collector.model.*
@@ -19,6 +21,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.util.ReflectionHelpers
 
 @RunWith(RobolectricTestRunner::class)
 class SearchCollectorTest {
@@ -319,5 +322,317 @@ class SearchCollectorTest {
     @Test
     fun `DEBUG_TOKEN_PARAM is ___scForceNewSession_`() {
         assertEquals("___scForceNewSession_", SearchCollector.DEBUG_TOKEN_PARAM)
+    }
+
+    // --- U1: disable() ---
+
+    @Test
+    fun `disable clears pending buffer and discards subsequent calls`() = runTest {
+        // AE1: buffer 50 events, then disable
+        repeat(50) { SearchCollector.trackFiredSearch("event$it") }
+        SearchCollector.disable()
+        // 10 further calls are discarded
+        repeat(10) { SearchCollector.trackFiredSearch("post-disable$it") }
+        SearchCollector.configure(makeConfig())
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(0, sentBatches.size)
+    }
+
+    @Test
+    fun `disable then configure re-enables and replays empty queue`() = runTest {
+        // AE3: disable → configure → events flow normally
+        SearchCollector.disable()
+        SearchCollector.configure(makeConfig())
+        SearchCollector.trackFiredSearch("jeans")
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+        assertEquals(1, sentBatches[0].size)
+    }
+
+    @Test
+    fun `disable after configure discards new events but existing queue still flushes`() = runTest {
+        SearchCollector.configure(makeConfig())
+        SearchCollector.trackFiredSearch("pre-disable")
+        Thread.sleep(300)
+        SearchCollector.disable()
+        SearchCollector.trackFiredSearch("post-disable")
+        Thread.sleep(100)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+        val eventKeywords = (sentBatches[0][0] as SearchCollectorEvent.FiredSearch).keywords
+        assertEquals("pre-disable", eventKeywords)
+    }
+
+    @Test
+    fun `configure after disable re-enables so new events flow normally`() = runTest {
+        SearchCollector.disable()
+        SearchCollector.configure(makeConfig())
+        SearchCollector.trackFiredSearch("after-re-enable")
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+    }
+
+    // --- U1: maxPendingActions cap ---
+
+    @Test
+    fun `pending queue cap drops oldest events`() {
+        // AE2: 260 buffered pre-configure against the default cap of 250 → oldest 10 dropped
+        // Test the cap at buffer-time via direct inspection of the pending queue
+        val pendingField = SearchCollector.javaClass.getDeclaredField("pendingActions")
+        pendingField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val pending = pendingField.get(SearchCollector) as java.util.concurrent.ConcurrentLinkedQueue<*>
+
+        repeat(260) { SearchCollector.trackFiredSearch("event$it") }
+
+        assertEquals(250, pending.size)
+    }
+
+    // --- U1: clearPendingActions() ---
+
+    @Test
+    fun `clearPendingActions removes pre-configure buffer`() = runTest {
+        // AE7
+        repeat(5) { SearchCollector.trackFiredSearch("event$it") }
+        SearchCollector.clearPendingActions()
+        SearchCollector.configure(makeConfig())
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(0, sentBatches.size)
+    }
+
+    @Test
+    fun `clearPendingActions is no-op when collector is active`() = runTest {
+        // AE8
+        SearchCollector.configure(makeConfig())
+        SearchCollector.clearPendingActions() // no-op — active events bypass the buffer
+        SearchCollector.trackFiredSearch("jeans")
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+    }
+
+    @Test
+    fun `reset after disable restores pre-configure buffering`() = runTest {
+        // P0 fix: reset() must clear isDisabled so that post-reset pre-configure events buffer
+        SearchCollector.disable()
+        SearchCollector.reset()
+        SearchCollector.trackFiredSearch("should-be-buffered")
+        SearchCollector.configure(makeConfig())
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+    }
+
+    // --- U2: setContext() ---
+
+    @Test
+    fun `setContext after configure propagates to events`() = runTest {
+        // AE4
+        SearchCollector.configure(makeConfig())
+        SearchCollector.setContext("pdp/12345", "search/results")
+        SearchCollector.trackFiredSearch("jeans")
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+        val event = sentBatches[0][0] as SearchCollectorEvent.FiredSearch
+        assertEquals("pdp/12345", event.url)
+        assertEquals("search/results", event.ref)
+    }
+
+    @Test
+    fun `setContext captures per-event url before configure`() = runTest {
+        // AE5: each pre-configure event carries the context at the time it was buffered
+        SearchCollector.setContext("home", "")
+        SearchCollector.trackFiredSearch("jeans")
+        SearchCollector.setContext("pdp", "home")
+        SearchCollector.trackFiredSearch("blue jeans")
+        SearchCollector.configure(makeConfig())
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+        assertEquals(2, sentBatches[0].size)
+        val first = sentBatches[0][0] as SearchCollectorEvent.FiredSearch
+        val second = sentBatches[0][1] as SearchCollectorEvent.FiredSearch
+        assertEquals("home", first.url)
+        assertEquals("pdp", second.url)
+    }
+
+    @Test
+    fun `setContext while disabled is cached and applied after configure`() = runTest {
+        SearchCollector.disable()
+        SearchCollector.setContext("pdp/999", "home")
+        SearchCollector.configure(makeConfig())
+        SearchCollector.trackFiredSearch("shoes")
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+        val event = sentBatches[0][0] as SearchCollectorEvent.FiredSearch
+        assertEquals("pdp/999", event.url)
+        assertEquals("home", event.ref)
+    }
+
+    @Test
+    fun `setContext with custom ContextProvider no-op does not crash`() = runTest {
+        val customProvider = object : ContextProvider {
+            override suspend fun getCurrentUrl() = "custom-url"
+            override suspend fun getReferrer() = "custom-ref"
+            override suspend fun getUserAgent() = "custom-agent"
+            override suspend fun isTouchDevice() = false
+            override suspend fun getLanguage() = "en"
+            // setContext() inherits the default no-op
+        }
+        SearchCollector.configure(makeConfig().copy(
+            overrides = makeConfig().overrides.copy(contextProvider = customProvider)
+        ))
+        SearchCollector.setContext("some/screen", "previous") // must not crash
+        SearchCollector.trackFiredSearch("jeans")
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+        val event = sentBatches[0][0] as SearchCollectorEvent.FiredSearch
+        // custom provider returns its own values, not the ones from setContext
+        assertEquals("custom-url", event.url)
+    }
+
+    @Test
+    fun `post-replay context restore applies cached context to subsequent active events`() = runTest {
+        SearchCollector.setContext("final-screen", "prev")
+        // Buffer one event with a different per-event context
+        SearchCollector.setContext("first-screen", "")
+        SearchCollector.trackFiredSearch("buffered")
+        SearchCollector.setContext("final-screen", "prev")
+        SearchCollector.configure(makeConfig())
+        Thread.sleep(300)
+        // After replay, active events should carry the final cached context
+        SearchCollector.trackFiredSearch("active")
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+        assertEquals(2, sentBatches[0].size)
+        val activeEvent = sentBatches[0][1] as SearchCollectorEvent.FiredSearch
+        assertEquals("final-screen", activeEvent.url)
+    }
+
+    // --- U3: flushAsync() ---
+
+    @Test
+    fun `flushAsync before configure is a no-op and does not throw`() {
+        SearchCollector.flushAsync() // no-op — core is null
+    }
+
+    @Test
+    fun `flushAsync after configure sends queued events`() = runTest {
+        SearchCollector.configure(makeConfig())
+        SearchCollector.trackFiredSearch("shoes")
+        Thread.sleep(300)
+        SearchCollector.flushAsync()
+        Thread.sleep(300) // give the async flush time to complete
+        assertEquals(1, sentBatches.size)
+    }
+
+    // --- U4: debug routing auto-detection ---
+
+    private fun configureWithoutTransportOverride(debugRouting: DebugRoutingSettings?) {
+        SearchCollector.configure(
+            SearchCollectorConfig(
+                endpoint = "https://sqs.example.com/123/queue",
+                channel = "de",
+                context = context,
+                queueSettings = QueueSettings(batchIntervalMs = 60_000L),
+                debugRouting = debugRouting,
+                overrides = DependencyOverrides(
+                    sessionStore = InMemorySessionStore(),
+                    trailStore = InMemoryTrailStore(),
+                    eventQueue = queue,
+                    timestampProvider = SystemTimestampProvider(),
+                ),
+            )
+        )
+    }
+
+    private fun activeTransportUrl(): String? {
+        val coreField = SearchCollector.javaClass.getDeclaredField("core")
+        coreField.isAccessible = true
+        val core = coreField.get(SearchCollector) as? SearchCollectorCore ?: return null
+        val transportField = SearchCollectorCore::class.java.getDeclaredField("transport")
+        transportField.isAccessible = true
+        val transport = transportField.get(core) as? ShSqsTransport ?: return null
+        return transport.activeEndpointUrl
+    }
+
+    @Test
+    fun `debugRouting enabled=null on release build uses production endpoint`() {
+        // AE6 release path
+        val originalCodename = Build.VERSION.CODENAME
+        try {
+            ReflectionHelpers.setStaticField(Build.VERSION::class.java, "CODENAME", "REL")
+            configureWithoutTransportOverride(DebugRoutingSettings(enabled = null))
+            val url = activeTransportUrl()
+            assertNotNull(url)
+            assertFalse("expected prod URL, got: $url", url!!.contains("/debug/"))
+        } finally {
+            ReflectionHelpers.setStaticField(Build.VERSION::class.java, "CODENAME", originalCodename)
+        }
+    }
+
+    @Test
+    fun `debugRouting enabled=null on debug build uses debug endpoint`() {
+        // AE6 debug path
+        val originalCodename = Build.VERSION.CODENAME
+        try {
+            ReflectionHelpers.setStaticField(Build.VERSION::class.java, "CODENAME", "Tiramisu")
+            configureWithoutTransportOverride(DebugRoutingSettings(enabled = null))
+            val url = activeTransportUrl()
+            assertNotNull(url)
+            assertTrue("expected /debug/ in URL, got: $url", url!!.contains("/debug/"))
+        } finally {
+            ReflectionHelpers.setStaticField(Build.VERSION::class.java, "CODENAME", originalCodename)
+        }
+    }
+
+    @Test
+    fun `debugRouting enabled=true always uses debug endpoint regardless of CODENAME`() {
+        val originalCodename = Build.VERSION.CODENAME
+        try {
+            ReflectionHelpers.setStaticField(Build.VERSION::class.java, "CODENAME", "REL")
+            configureWithoutTransportOverride(DebugRoutingSettings(enabled = true))
+            val url = activeTransportUrl()
+            assertNotNull(url)
+            assertTrue("expected /debug/ in URL, got: $url", url!!.contains("/debug/"))
+        } finally {
+            ReflectionHelpers.setStaticField(Build.VERSION::class.java, "CODENAME", originalCodename)
+        }
+    }
+
+    @Test
+    fun `debugRouting enabled=false always uses production endpoint regardless of CODENAME`() {
+        val originalCodename = Build.VERSION.CODENAME
+        try {
+            ReflectionHelpers.setStaticField(Build.VERSION::class.java, "CODENAME", "Tiramisu")
+            configureWithoutTransportOverride(DebugRoutingSettings(enabled = false))
+            val url = activeTransportUrl()
+            assertNotNull(url)
+            assertFalse("expected prod URL, got: $url", url!!.contains("/debug/"))
+        } finally {
+            ReflectionHelpers.setStaticField(Build.VERSION::class.java, "CODENAME", originalCodename)
+        }
+    }
+
+    @Test
+    fun `debugRouting=null uses production endpoint`() {
+        val originalCodename = Build.VERSION.CODENAME
+        try {
+            ReflectionHelpers.setStaticField(Build.VERSION::class.java, "CODENAME", "Tiramisu")
+            configureWithoutTransportOverride(null)
+            val url = activeTransportUrl()
+            assertNotNull(url)
+            assertFalse("expected prod URL when debugRouting=null, got: $url", url!!.contains("/debug/"))
+        } finally {
+            ReflectionHelpers.setStaticField(Build.VERSION::class.java, "CODENAME", originalCodename)
+        }
     }
 }
