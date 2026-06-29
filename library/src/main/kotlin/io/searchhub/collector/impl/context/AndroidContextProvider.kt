@@ -7,12 +7,15 @@ import java.util.Locale
 
 class AndroidContextProvider(
     context: Context,
-    private var currentUrl: String = "",
-    private var referrer: String = "",
+    initialUrl: String = "",
+    initialReferrer: String = "",
 ) : ContextProvider {
 
     @Suppress("unused")
     private val appContext: Context = context.applicationContext
+
+    @Volatile private var currentUrl: String = initialUrl
+    @Volatile private var referrer: String = initialReferrer
 
     override suspend fun getCurrentUrl(): String = currentUrl
 
@@ -33,4 +36,9 @@ class AndroidContextProvider(
     fun setUrl(url: String) { currentUrl = url }
 
     fun setReferrer(referrer: String) { this.referrer = referrer }
+
+    override fun setContext(url: String, referrer: String) {
+        setUrl(url)
+        setReferrer(referrer)
+    }
 }

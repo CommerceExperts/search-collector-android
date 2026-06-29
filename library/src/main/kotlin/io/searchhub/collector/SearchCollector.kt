@@ -1,6 +1,7 @@
 package io.searchhub.collector
 
 import android.content.Context
+import android.os.Build
 import io.searchhub.collector.SearchCollector.DEBUG_TOKEN_PARAM
 import io.searchhub.collector.SearchCollector.configure
 import io.searchhub.collector.SearchCollector.extractDebugToken
@@ -33,8 +34,9 @@ import io.searchhub.collector.impl.trail.PREFS_NAME as TRAIL_PREFS_NAME
  *
  * Usage:
  * 1. Call [configure] once on app start (e.g. in Application.onCreate).
- * 2. Call tracking methods anywhere — they are fire-and-forget and safe to call before [configure].
- * 3. Optionally call [flush] to force-send all queued events.
+ * 2. Optionally call [setContext] whenever the user navigates to a new screen.
+ * 3. Call tracking methods anywhere — they are fire-and-forget and safe to call before [configure].
+ * 4. Optionally call [flush] or [flushAsync] to force-send all queued events.
  *
  * Java callers use @JvmStatic methods directly: SearchCollector.configure(...)
  */
@@ -48,15 +50,32 @@ object SearchCollector {
 
     @Volatile
     private var appContext: Context? = null
+
+    @Volatile
+    private var isDisabled = false
+
+    @Volatile
+    private var maxPendingActions: Int = 250
+
+    @Volatile
+    private var cachedUrl: String = ""
+
+    @Volatile
+    private var cachedReferrer: String = ""
+
     private val pendingActions = ConcurrentLinkedQueue<PendingAction>()
     private val replayScope = CoroutineScope(Dispatchers.IO)
 
     /**
      * Configure and initialize the collector. Must be called before events can be sent.
      * Safe to call multiple times — disposes the previous instance first.
+     * Re-enables the collector if [disable] was previously called.
      */
     @JvmStatic
     fun configure(config: SearchCollectorConfig) {
+        isDisabled = false
+        maxPendingActions = config.queueSettings.maxPendingActions
+
         val appContext = config.context.applicationContext
         this.appContext = appContext
 
@@ -65,7 +84,7 @@ object SearchCollector {
         val transport = config.overrides.transport
             ?: ShSqsTransport(
                 queueUrl = config.endpoint,
-                debugEnabled = config.debugRouting?.enabled ?: false,
+                debugEnabled = config.debugRouting?.let { it.enabled ?: (Build.VERSION.CODENAME != "REL") } ?: false,
                 debugEndpoint = config.debugRouting?.debugEndpoint,
             )
         val sessionStore = config.overrides.sessionStore
@@ -78,6 +97,8 @@ object SearchCollector {
             ?: AndroidContextProvider(appContext)
         val timestampProvider = config.overrides.timestampProvider
             ?: SystemTimestampProvider()
+
+        contextProvider.setContext(cachedUrl, cachedReferrer)
 
         val newCore = SearchCollectorCore(
             transport = transport,
@@ -100,6 +121,7 @@ object SearchCollector {
         }
 
         core = newCore
+        newCore.setContext(cachedUrl, cachedReferrer)
 
         // Replay buffered calls made before configure()
         val pending = mutableListOf<PendingAction>()
@@ -110,11 +132,47 @@ object SearchCollector {
             val useOriginal = config.bufferedEventsTimestamp == BufferedEventsTimestamp.ORIGINAL
             replayScope.launch {
                 for (action in pending) {
+                    newCore.setContext(action.url, action.referrer)
                     val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
                     runCatching { action.block(newCore, ts) }
                 }
+                newCore.setContext(cachedUrl, cachedReferrer)
             }
         }
+    }
+
+    /**
+     * Update the current screen context. In native Android apps, [url] is the current screen
+     * identifier (e.g. a deep-link path or screen name) and [referrer] is the previous screen —
+     * not HTTP URLs. Always caches the values regardless of collector state; also delegates to
+     * the active core when [configure] has been called.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun setContext(url: String, referrer: String = "") {
+        cachedUrl = url
+        cachedReferrer = referrer
+        core?.setContext(url, referrer)
+    }
+
+    /**
+     * Disable tracking. Clears any buffered pre-configure events and discards all subsequent
+     * tracking calls until [configure] is called. Events already in the queue before [disable]
+     * was called continue to flush normally.
+     */
+    @JvmStatic
+    fun disable() {
+        isDisabled = true
+        pendingActions.clear()
+    }
+
+    /**
+     * Discard all buffered pre-configure events without affecting the enabled/disabled state.
+     * Safe to call before [configure], while disabled, or while active.
+     */
+    @JvmStatic
+    fun clearPendingActions() {
+        pendingActions.clear()
     }
 
     /** Send a browser event with device info. Call once on app/screen start. */
@@ -307,10 +365,20 @@ object SearchCollector {
     fun extractDebugToken(intent: android.content.Intent): String? =
         intent.data?.getQueryParameter(DEBUG_TOKEN_PARAM)
 
-    /** Force-send all queued events immediately. */
+    /** Force-send all queued events immediately. Suspends until the flush is complete. */
     @JvmStatic
     suspend fun flush() {
         core?.flush()
+    }
+
+    /**
+     * Fire-and-forget flush. Enqueues a flush on the core's internal scope and returns
+     * immediately. No-op if [configure] has not been called.
+     */
+    @JvmStatic
+    fun flushAsync() {
+        val c = core ?: return
+        c.launch { c.flush() }
     }
 
     /**
@@ -321,6 +389,9 @@ object SearchCollector {
     @JvmStatic
     @JvmOverloads
     fun reset(clearStorage: Boolean = false) {
+        isDisabled = false
+        cachedUrl = ""
+        cachedReferrer = ""
         core?.dispose()
         core = null
         pendingActions.clear()
@@ -338,17 +409,21 @@ object SearchCollector {
     }
 
     private fun fireAndForget(block: suspend (SearchCollectorCore, Long) -> Unit) {
+        if (isDisabled) return
+        val ts = System.currentTimeMillis()
         val currentCore = core
         if (currentCore != null) {
-            val ts = System.currentTimeMillis()
             currentCore.launch { block(currentCore, ts) }
         } else {
-            pendingActions.add(PendingAction(System.currentTimeMillis(), block))
+            pendingActions.add(PendingAction(ts, cachedUrl, cachedReferrer, block))
+            if (pendingActions.size > maxPendingActions) pendingActions.poll()
         }
     }
 }
 
 internal data class PendingAction(
     val timestamp: Long,
+    val url: String,
+    val referrer: String,
     val block: suspend (SearchCollectorCore, Long) -> Unit,
 )
