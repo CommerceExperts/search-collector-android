@@ -517,6 +517,40 @@ class SearchCollectorTest {
         assertEquals("final-screen", activeEvent.url)
     }
 
+    // --- P1.5: replay race / late arrivals ---
+
+    @Test
+    fun `events arriving right after configure during replay are drained and sent`() = runTest {
+        // Buffer one event so configure() keeps core==null during replay.
+        // "post-configure" is fired before replay settles — it lands in pendingActions
+        // and must be drained by the second drain at the end of replay.
+        SearchCollector.trackFiredSearch("buffered")
+        SearchCollector.configure(makeConfig())
+        SearchCollector.trackFiredSearch("post-configure") // may arrive while core==null
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+        val keywords = sentBatches[0].map { (it as SearchCollectorEvent.FiredSearch).keywords }
+        assertTrue("buffered event missing", keywords.contains("buffered"))
+        assertTrue("post-configure event missing", keywords.contains("post-configure"))
+    }
+
+    @Test
+    fun `reset before replay settles prevents stale events from activating the core`() = runTest {
+        // Buffer events, configure (replay launches async), reset immediately.
+        // pendingCore?.dispose() cancels the replay scope; the if (pendingCore===newCore)
+        // guard prevents core from being set even if the coroutine body runs through.
+        repeat(5) { SearchCollector.trackFiredSearch("should-not-appear$it") }
+        val replayQueue = InMemoryEventQueue(maxBatchSize = 10)
+        SearchCollector.configure(makeConfig(eventQueue = replayQueue))
+        SearchCollector.reset()
+        Thread.sleep(300) // let any in-flight coroutine settle
+        // Re-configure with fresh queue — no events from the cancelled replay should appear
+        SearchCollector.configure(makeConfig())
+        SearchCollector.flush()
+        assertEquals(0, sentBatches.size)
+    }
+
     // --- U3: flushAsync() ---
 
     @Test

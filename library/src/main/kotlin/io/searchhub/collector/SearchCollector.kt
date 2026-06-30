@@ -23,6 +23,7 @@ import io.searchhub.collector.model.SearchAction
 import io.searchhub.collector.model.SearchCollectorConfig
 import io.searchhub.collector.model.TrailType
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicReference
 import io.searchhub.collector.impl.session.PREFS_NAME as SESSION_PREFS_NAME
 import io.searchhub.collector.impl.trail.PREFS_NAME as TRAIL_PREFS_NAME
 
@@ -54,11 +55,10 @@ object SearchCollector {
     @Volatile
     private var maxPendingActions: Int = 250
 
-    @Volatile
-    private var cachedUrl: String = ""
+    private val cachedContext = AtomicReference("" to "")
 
     @Volatile
-    private var cachedReferrer: String = ""
+    private var pendingCore: SearchCollectorCore? = null
 
     private val pendingActions = ConcurrentLinkedQueue<PendingAction>()
 
@@ -75,7 +75,12 @@ object SearchCollector {
         val appContext = config.context.applicationContext
         this.appContext = appContext
 
+        // Cancel any in-flight replay, then dispose the active core.
+        // core is explicitly nulled so fireAndForget buffers during replay.
+        pendingCore?.dispose()
+        pendingCore = null
         core?.dispose()
+        core = null
 
         val transport = config.overrides.transport
             ?: ShSqsTransport(
@@ -94,7 +99,8 @@ object SearchCollector {
         val timestampProvider = config.overrides.timestampProvider
             ?: SystemTimestampProvider()
 
-        contextProvider.setContext(cachedUrl, cachedReferrer)
+        val (cUrl, cRef) = cachedContext.get()
+        contextProvider.setContext(cUrl, cRef)
 
         val newCore = SearchCollectorCore(
             transport = transport,
@@ -119,16 +125,16 @@ object SearchCollector {
             }
         }
 
-        core = newCore
-        newCore.setContext(cachedUrl, cachedReferrer)
-
-        // Replay buffered calls made before configure()
+        // Drain pending actions while core==null. core is assigned at the END of replay
+        // so that live events concurrent with replay see the correct per-event context,
+        // not the temporary URL set for each replayed action.
         val pending = mutableListOf<PendingAction>()
         while (true) {
             pending.add(pendingActions.poll() ?: break)
         }
+        val useOriginal = config.bufferedEventsTimestamp == BufferedEventsTimestamp.ORIGINAL
         if (pending.isNotEmpty()) {
-            val useOriginal = config.bufferedEventsTimestamp == BufferedEventsTimestamp.ORIGINAL
+            pendingCore = newCore
             newCore.launch {
                 for (action in pending) {
                     newCore.setContext(action.url, action.referrer)
@@ -136,8 +142,31 @@ object SearchCollector {
                     runCatching { action.block(newCore, ts) }
                         .onFailure { err -> newCore.logReplayError(err) }
                 }
-                newCore.setContext(cachedUrl, cachedReferrer)
+                val (rUrl, rRef) = cachedContext.get()
+                newCore.setContext(rUrl, rRef)
+
+                // Activate only if reset()/configure() hasn't displaced this replay
+                if (pendingCore === newCore) {
+                    core = newCore
+                    pendingCore = null
+
+                    // Drain events that buffered in pendingActions while replay was running
+                    val lateArrivals = mutableListOf<PendingAction>()
+                    while (true) { lateArrivals.add(pendingActions.poll() ?: break) }
+                    for (action in lateArrivals) {
+                        newCore.setContext(action.url, action.referrer)
+                        val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
+                        runCatching { action.block(newCore, ts) }
+                            .onFailure { err -> newCore.logReplayError(err) }
+                    }
+                    if (lateArrivals.isNotEmpty()) {
+                        val (lUrl, lRef) = cachedContext.get()
+                        newCore.setContext(lUrl, lRef)
+                    }
+                }
             }
+        } else {
+            core = newCore
         }
     }
 
@@ -150,8 +179,7 @@ object SearchCollector {
     @JvmStatic
     @JvmOverloads
     fun setContext(url: String, referrer: String = "") {
-        cachedUrl = url
-        cachedReferrer = referrer
+        cachedContext.set(url to referrer)
         core?.setContext(url, referrer)
     }
 
@@ -390,8 +418,9 @@ object SearchCollector {
     @JvmOverloads
     fun reset(clearStorage: Boolean = false) {
         isDisabled = false
-        cachedUrl = ""
-        cachedReferrer = ""
+        cachedContext.set("" to "")
+        pendingCore?.dispose()
+        pendingCore = null
         core?.dispose()
         core = null
         pendingActions.clear()
@@ -415,7 +444,8 @@ object SearchCollector {
         if (currentCore != null) {
             currentCore.launch { block(currentCore, ts) }
         } else {
-            pendingActions.add(PendingAction(ts, cachedUrl, cachedReferrer, block))
+            val (url, ref) = cachedContext.get()
+            pendingActions.add(PendingAction(ts, url, ref, block))
             if (pendingActions.size > maxPendingActions) pendingActions.poll()
         }
     }
