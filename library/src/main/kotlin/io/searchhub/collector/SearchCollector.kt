@@ -22,9 +22,6 @@ import io.searchhub.collector.model.ProductPosition
 import io.searchhub.collector.model.SearchAction
 import io.searchhub.collector.model.SearchCollectorConfig
 import io.searchhub.collector.model.TrailType
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentLinkedQueue
 import io.searchhub.collector.impl.session.PREFS_NAME as SESSION_PREFS_NAME
 import io.searchhub.collector.impl.trail.PREFS_NAME as TRAIL_PREFS_NAME
@@ -64,7 +61,6 @@ object SearchCollector {
     private var cachedReferrer: String = ""
 
     private val pendingActions = ConcurrentLinkedQueue<PendingAction>()
-    private val replayScope = CoroutineScope(Dispatchers.IO)
 
     /**
      * Configure and initialize the collector. Must be called before events can be sent.
@@ -117,7 +113,10 @@ object SearchCollector {
         val debugToken = config.debugRouting?.debugToken
         if (debugToken != null) {
             newCore.debugSessionToken = debugToken
-            (transport as? DebugCapable)?.setDebugActive(true)
+            // enabled=false means "force production" — honour it even when a token is present
+            if (config.debugRouting?.enabled != false) {
+                (transport as? DebugCapable)?.setDebugActive(true)
+            }
         }
 
         core = newCore
@@ -130,11 +129,12 @@ object SearchCollector {
         }
         if (pending.isNotEmpty()) {
             val useOriginal = config.bufferedEventsTimestamp == BufferedEventsTimestamp.ORIGINAL
-            replayScope.launch {
+            newCore.launch {
                 for (action in pending) {
                     newCore.setContext(action.url, action.referrer)
                     val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
                     runCatching { action.block(newCore, ts) }
+                        .onFailure { err -> newCore.logReplayError(err) }
                 }
                 newCore.setContext(cachedUrl, cachedReferrer)
             }
