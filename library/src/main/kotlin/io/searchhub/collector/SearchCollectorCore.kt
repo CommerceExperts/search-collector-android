@@ -35,6 +35,10 @@ internal class SearchCollectorCore(
         contextProvider.setContext(url, referrer)
     }
 
+    fun logReplayError(err: Throwable) {
+        logger.error("Replay error — pre-configure event lost", err)
+    }
+
     internal fun launch(block: suspend () -> Unit): Job = scope.launch {
         runCatching { block() }.onFailure { err ->
             this@SearchCollectorCore.logger.error("Tracking error", err)

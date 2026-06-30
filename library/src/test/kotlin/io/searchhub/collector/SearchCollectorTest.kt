@@ -208,7 +208,7 @@ class SearchCollectorTest {
     }
 
     @Test
-    fun `configure with debugToken and enabled false still activates debug routing`() = runTest {
+    fun `configure with debugToken and enabled=false respects the explicit false and stays on production endpoint`() = runTest {
         val sqsTransport = ShSqsTransport(
             queueUrl = "https://sqs.example.com/123/queue",
             debugEnabled = false,
@@ -216,7 +216,7 @@ class SearchCollectorTest {
         SearchCollector.configure(makeConfig(transport = sqsTransport).copy(
             debugRouting = DebugRoutingSettings(enabled = false, debugToken = "tok"),
         ))
-        assertTrue(sqsTransport.activeEndpointUrl.contains("/debug/"))
+        assertFalse(sqsTransport.activeEndpointUrl.contains("/debug/"))
     }
 
     @Test
