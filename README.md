@@ -112,30 +112,24 @@ SearchCollector.trackCheckout(
 
 ### 3. Set the current screen URL (recommended)
 
-Android has no concept of a browser URL. Use `AndroidContextProvider` to set it manually:
+Android has no concept of a browser URL. Call `setContext` whenever the user navigates to a new screen. The values are attached to every subsequent event:
 
 ```kotlin
-val contextProvider = AndroidContextProvider(applicationContext)
-
-SearchCollector.configure(
-    SearchCollectorConfig(
-        endpoint = "https://your-sqs-endpoint",
-        channel = "de",
-        context = applicationContext,
-        overrides = DependencyOverrides(contextProvider = contextProvider),
-    )
+// Call on every screen change — safe to call before or after configure()
+SearchCollector.setContext(
+    url = "app://my-app/search?q=jeans",
+    referrer = "app://my-app/home",   // optional
 )
-
-// Update on every screen change:
-contextProvider.setUrl("app://my-app/search?q=jeans")
-contextProvider.setReferrer("app://my-app/home")
 ```
+
+Events buffered before `configure()` capture the context at the time they were queued, so per-event attribution works even during app startup.
 
 ## API Reference
 
 | Method | When to call |
 |---|---|
 | `initialize()` | Once on app start |
+| `setContext(url, referrer?)` | On every screen navigation |
 | `trackInstantSearch(keywords)` | On each search input change (debounced) |
 | `trackFiredSearch(keywords)` | On explicit search submit |
 | `trackSuggestClick(keywords, prefix, position)` | On autocomplete suggestion click |
@@ -149,8 +143,11 @@ contextProvider.setReferrer("app://my-app/home")
 | `trackCheckout(products)` | On completed purchase |
 | `registerTrail(key, query, trailType?)` | Manually register a search trail |
 | `copyTrail(fromProductId, toProductId)` | When a product variant is selected on the PDP |
-| `flush()` | Force-send all queued events immediately |
-| `reset()` | Dispose the instance (e.g. after logout) |
+| `flush()` | Force-send all queued events (suspending) |
+| `flushAsync()` | Fire-and-forget flush — returns immediately |
+| `disable()` | Opt out of tracking; clears the pending buffer |
+| `clearPendingActions()` | Discard buffered pre-configure events without disabling |
+| `reset(clearStorage?)` | Dispose the instance (e.g. after logout); pass `true` to also erase session, trails, and persisted queue |
 
 ## Background Flush (WorkManager)
 
@@ -203,6 +200,28 @@ Once active, all events are routed to the debug endpoint and tagged with the ses
 
 ```kotlin
 SearchCollector.deactivateDebugSession()
+```
+
+## Opt-out / Disable
+
+Call `disable()` to stop tracking — for example when the user withdraws consent. It clears any events buffered before `configure()` and silently discards all subsequent tracking calls:
+
+```kotlin
+SearchCollector.disable()
+```
+
+Calling `configure()` re-enables tracking. Events queued in the active collector before `disable()` continue to flush normally.
+
+To discard only the pre-configure buffer without disabling tracking, use `clearPendingActions()`:
+
+```kotlin
+SearchCollector.clearPendingActions()
+```
+
+For full cleanup on logout or GDPR erasure, use `reset(clearStorage = true)`, which also wipes the SharedPreferences session ID, trails, and persisted event queue:
+
+```kotlin
+SearchCollector.reset(clearStorage = true)
 ```
 
 ## Configuration
