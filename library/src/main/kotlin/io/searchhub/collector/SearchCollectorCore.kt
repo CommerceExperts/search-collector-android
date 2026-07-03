@@ -380,6 +380,14 @@ internal class SearchCollectorCore(
         scope.cancel()
     }
 
+    fun gracefulDispose() {
+        autoFlushJob?.cancel()
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { flush() }
+            scope.cancel()
+        }
+    }
+
     internal suspend fun activateDebugSession(token: String) {
         flushMutex.withLock {
             debugSessionToken = token

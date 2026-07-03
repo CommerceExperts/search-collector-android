@@ -76,11 +76,11 @@ object SearchCollector {
         val appContext = config.context.applicationContext
         this.appContext = appContext
 
-        // Cancel any in-flight replay, then dispose the active core.
+        // Cancel any in-flight replay, then gracefully flush the active core.
         // core is explicitly nulled so fireAndForget buffers during replay.
-        pendingCore?.dispose()
+        pendingCore?.gracefulDispose()
         pendingCore = null
-        core?.dispose()
+        core?.gracefulDispose()
         core = null
 
         val transport = config.overrides.transport
