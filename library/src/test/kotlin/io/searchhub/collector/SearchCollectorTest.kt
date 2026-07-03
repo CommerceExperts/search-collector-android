@@ -486,12 +486,13 @@ class SearchCollectorTest {
         SearchCollector.flush()
         assertEquals(1, sentBatches.size)
         assertEquals(2, sentBatches[0].size)
-        val first = sentBatches[0][0] as SearchCollectorEvent.FiredSearch
-        assertEquals("screen/A", first.url)
-        assertEquals("prev/A", first.ref)
-        val second = sentBatches[0][1] as SearchCollectorEvent.FiredSearch
-        assertEquals("screen/B", second.url)
-        assertEquals("prev/B", second.ref)
+        val events = sentBatches[0].map { it as SearchCollectorEvent.FiredSearch }
+        val jeans = events.first { it.keywords == "jeans" }
+        assertEquals("screen/A", jeans.url)
+        assertEquals("prev/A", jeans.ref)
+        val shoes = events.first { it.keywords == "shoes" }
+        assertEquals("screen/B", shoes.url)
+        assertEquals("prev/B", shoes.ref)
     }
 
     @Test
