@@ -476,6 +476,25 @@ class SearchCollectorTest {
     }
 
     @Test
+    fun `setNavContext context is captured at trackXxx call time not at processing time`() = runTest {
+        SearchCollector.configure(makeConfig())
+        SearchCollector.setNavContext("screen/A", "prev/A")
+        SearchCollector.trackFiredSearch("jeans")            // snapshot: screen/A, prev/A
+        SearchCollector.setNavContext("screen/B", "prev/B")
+        SearchCollector.trackFiredSearch("shoes")            // snapshot: screen/B, prev/B
+        Thread.sleep(300)
+        SearchCollector.flush()
+        assertEquals(1, sentBatches.size)
+        assertEquals(2, sentBatches[0].size)
+        val first = sentBatches[0][0] as SearchCollectorEvent.FiredSearch
+        assertEquals("screen/A", first.url)
+        assertEquals("prev/A", first.ref)
+        val second = sentBatches[0][1] as SearchCollectorEvent.FiredSearch
+        assertEquals("screen/B", second.url)
+        assertEquals("prev/B", second.ref)
+    }
+
+    @Test
     fun `setNavContext url and ref take effect even with a custom BrowserInfoProvider`() = runTest {
         val customProvider = object : BrowserInfoProvider {
             override suspend fun getUserAgent() = "custom-agent"
