@@ -72,20 +72,17 @@ internal class SearchCollectorCore(
         url: String = "",
         ref: String = "",
     ) {
-        val agent = browserInfoProvider.getUserAgent()
-        val touch = browserInfoProvider.isTouchDevice()
-        val lang = browserInfoProvider.getLanguage()
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.Browser(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
-                agent = agent,
-                touch = touch,
-                lang = lang,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
+                agent = browserInfoProvider.getUserAgent(),
+                touch = browserInfoProvider.isTouchDevice(),
+                lang = browserInfoProvider.getLanguage(),
             )
         )
     }
@@ -96,17 +93,16 @@ internal class SearchCollectorCore(
         url: String = "",
         ref: String = "",
     ) {
-        val query = formatQuery(keywords)
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.InstantSearch(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
                 keywords = keywords,
-                query = query,
+                query = formatQuery(keywords),
             )
         )
     }
@@ -117,17 +113,16 @@ internal class SearchCollectorCore(
         url: String = "",
         ref: String = "",
     ) {
-        val query = formatQuery(keywords)
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.FiredSearch(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
                 keywords = keywords,
-                query = query,
+                query = formatQuery(keywords),
             )
         )
     }
@@ -140,17 +135,16 @@ internal class SearchCollectorCore(
         url: String = "",
         ref: String = "",
     ) {
-        val query = formatQuery(keywords)
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.SuggestSearch(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
                 keywords = keywords,
-                query = query,
+                query = formatQuery(keywords),
                 data = SuggestData(prefix = prefix, position = position),
             )
         )
@@ -165,17 +159,16 @@ internal class SearchCollectorCore(
         url: String = "",
         ref: String = "",
     ) {
-        val query = formatQuery(keywords)
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.SuggestProductClick(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
                 keywords = keywords,
-                query = query,
+                query = formatQuery(keywords),
                 data = SuggestProductData(prefix = prefix, position = position, id = productId),
             )
         )
@@ -189,17 +182,16 @@ internal class SearchCollectorCore(
         url: String = "",
         ref: String = "",
     ) {
-        val query = formatQuery(keywords)
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.Search(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
                 keywords = keywords,
-                query = query,
+                query = formatQuery(keywords),
                 count = count,
                 action = action,
             )
@@ -213,17 +205,16 @@ internal class SearchCollectorCore(
         url: String = "",
         ref: String = "",
     ) {
-        val query = formatQuery(keywords)
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.Redirect(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
                 keywords = keywords,
-                query = query,
+                query = formatQuery(keywords),
                 resultCount = resultCount,
             )
         )
@@ -236,14 +227,14 @@ internal class SearchCollectorCore(
         url: String = "",
         ref: String = "",
     ) {
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.Impression(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
                 query = formatQuery(keywords),
                 data = products,
             )
@@ -260,14 +251,14 @@ internal class SearchCollectorCore(
     ) {
         val query = formatQuery(keywords)
         trailStore.register(productId, query, TrailType.MAIN)
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.Product(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
                 query = query,
                 id = productId,
                 position = position,
@@ -285,14 +276,14 @@ internal class SearchCollectorCore(
     ) {
         val query = formatQuery(keywords)
         trailStore.register(productId, query, TrailType.ASSOCIATED)
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.AssociatedProduct(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
                 query = query,
                 id = productId,
                 position = position,
@@ -309,14 +300,14 @@ internal class SearchCollectorCore(
         ref: String = "",
     ) {
         val trail = trailStore.get(productId)
-        val common = getCommonProperties(url, ref, timestampMs)
+        val session = getSession()
         enqueue(
             SearchCollectorEvent.Basket(
-                timestamp = common.timestamp,
-                session = common.session,
-                channel = common.channel,
-                url = common.url,
-                ref = common.ref,
+                timestamp = timestampMs,
+                session = session,
+                channel = channel,
+                url = url,
+                ref = ref,
                 query = trail?.query ?: "",
                 id = productId,
                 price = price,
@@ -331,16 +322,16 @@ internal class SearchCollectorCore(
         url: String = "",
         ref: String = "",
     ) {
+        val session = getSession()
         for (product in products) {
             val trail = trailStore.get(product.id)
-            val common = getCommonProperties(url, ref, timestampMs)
             enqueue(
                 SearchCollectorEvent.Checkout(
-                    timestamp = common.timestamp,
-                    session = common.session,
-                    channel = common.channel,
-                    url = common.url,
-                    ref = common.ref,
+                    timestamp = timestampMs,
+                    session = session,
+                    channel = channel,
+                    url = url,
+                    ref = ref,
                     query = trail?.query ?: "",
                     id = product.id,
                     price = product.price,
@@ -407,20 +398,9 @@ internal class SearchCollectorCore(
         }
     }
 
-    private suspend fun getCommonProperties(
-        url: String,
-        ref: String,
-        timestampMs: Long
-    ): CommonProperties {
+    private suspend fun getSession(): String {
         sessionStore.touch()
-        val session = debugSessionToken ?: sessionStore.getOrCreateSessionId()
-        return CommonProperties(
-            timestamp = timestampMs,
-            session = session,
-            channel = channel,
-            url = url,
-            ref = ref,
-        )
+        return debugSessionToken ?: sessionStore.getOrCreateSessionId()
     }
 
     private fun enqueue(event: SearchCollectorEvent) {
@@ -474,12 +454,4 @@ internal class SearchCollectorCore(
         val utf8Bytes = jsonStr.toByteArray(Charsets.UTF_8).size
         return (utf8Bytes * 4 + 2) / 3  // base64 overhead ~33%
     }
-
-    private data class CommonProperties(
-        val timestamp: Long,
-        val session: String,
-        val channel: String,
-        val url: String,
-        val ref: String,
-    )
 }
