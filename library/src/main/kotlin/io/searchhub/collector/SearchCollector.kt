@@ -4,8 +4,10 @@ import android.content.Context
 import android.os.Build
 import io.searchhub.collector.SearchCollector.DEBUG_TOKEN_PARAM
 import io.searchhub.collector.SearchCollector.configure
+import io.searchhub.collector.SearchCollector.disable
 import io.searchhub.collector.SearchCollector.extractDebugToken
 import io.searchhub.collector.SearchCollector.flush
+import io.searchhub.collector.SearchCollector.flushAsync
 import io.searchhub.collector.SearchCollector.setNavContext
 import io.searchhub.collector.impl.context.AndroidBrowserInfoProvider
 import io.searchhub.collector.impl.queue.BASE_PREFS_KEY
@@ -128,19 +130,12 @@ object SearchCollector {
         // Drain pending actions while core==null. core is assigned at the END of replay
         // so that live events arriving during replay buffer into pendingActions and carry
         // their own context snapshot — they are not affected by per-action context mutations.
-        val pending = mutableListOf<PendingAction>()
-        while (true) {
-            pending.add(pendingActions.poll() ?: break)
-        }
-        val useOriginal = config.bufferedEventsTimestamp == BufferedEventsTimestamp.ORIGINAL
+        val pending = drainPendingActions()
         if (pending.isNotEmpty()) {
+            val useOriginal = config.bufferedEventsTimestamp == BufferedEventsTimestamp.ORIGINAL
             pendingCore = newCore
             newCore.launch {
-                for (action in pending) {
-                    val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
-                    runCatching { action.block(newCore, ts, action.url, action.referrer) }
-                        .onFailure { err -> newCore.logReplayError(err) }
-                }
+                replay(pending, useOriginal, newCore)
 
                 // Activate only if reset()/configure() hasn't displaced this replay
                 if (pendingCore === newCore) {
@@ -148,19 +143,24 @@ object SearchCollector {
                     pendingCore = null
 
                     // Drain events that buffered in pendingActions while replay was running
-                    val lateArrivals = mutableListOf<PendingAction>()
-                    while (true) {
-                        lateArrivals.add(pendingActions.poll() ?: break)
-                    }
-                    for (action in lateArrivals) {
-                        val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
-                        runCatching { action.block(newCore, ts, action.url, action.referrer) }
-                            .onFailure { err -> newCore.logReplayError(err) }
-                    }
+                    val lateArrivals = drainPendingActions()
+                    replay(lateArrivals, useOriginal, newCore)
                 }
             }
         } else {
             core = newCore
+        }
+    }
+
+    private suspend fun replay(
+        actions: List<PendingAction>,
+        useOriginal: Boolean,
+        newCore: SearchCollectorCore
+    ) {
+        for (action in actions) {
+            val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
+            runCatching { action.block(newCore, ts, action.url, action.referrer) }
+                .onFailure { err -> newCore.logReplayError(err) }
         }
     }
 
@@ -447,6 +447,12 @@ object SearchCollector {
                 c.getSharedPreferences(BASE_PREFS_KEY, Context.MODE_PRIVATE).edit().clear().commit()
             }
         }
+    }
+
+    private fun drainPendingActions(): List<PendingAction> {
+        val drained = mutableListOf<PendingAction>()
+        while (true) drained.add(pendingActions.poll() ?: break)
+        return drained
     }
 
     private fun fireAndForget(block: suspend (SearchCollectorCore, Long, String, String) -> Unit) {
