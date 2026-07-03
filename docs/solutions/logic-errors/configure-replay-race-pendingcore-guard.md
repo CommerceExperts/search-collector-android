@@ -9,7 +9,7 @@ severity: high
 symptoms:
   - After configure() returns, live tracking calls record the URL or referrer of a past replayed event rather than the current screen
   - Calling configure() a second time silently discards events from the first replay — no error or log warning
-  - Under concurrent setContext() calls a single event captures a mismatched URL-and-referrer pair (new URL, old referrer)
+  - Under concurrent setNavContext() calls a single event captures a mismatched URL-and-referrer pair (new URL, old referrer)
   - Bug is intermittent and disappears under light load or a debugger
 root_cause: async_timing
 resolution_type: code_fix
@@ -20,7 +20,7 @@ tags:
   - replay
   - race-condition
   - pending-core
-  - context-provider
+  - browser-info-provider
   - concurrency
 ---
 
@@ -28,22 +28,22 @@ tags:
 
 ## Problem
 
-When `SearchCollector.configure()` is called, it previously activated the new core synchronously and then launched a coroutine to replay buffered pre-configure events. Because `core` was non-null the moment the coroutine was scheduled, any `fireAndForget()` call arriving during replay dispatched into the same core and raced with the replay's per-event `setContext()` mutations — causing live events to record the wrong URL or referrer. A secondary issue meant replay ran on an untracked `CoroutineScope` that was never cancelled, so events were silently lost when `configure()` was called a second time.
+When `SearchCollector.configure()` is called, it previously activated the new core synchronously and then launched a coroutine to replay buffered pre-configure events. Because `core` was non-null the moment the coroutine was scheduled, any `fireAndForget()` call arriving during replay dispatched into the same core and raced with the replay's per-event context mutations — causing live events to record the wrong URL or referrer. A secondary issue meant replay ran on an untracked `CoroutineScope` that was never cancelled, so events were silently lost when `configure()` was called a second time.
 
 ## Symptoms
 
 - After calling `configure()`, search or click events report an unexpected URL/referrer — typically the URL of a buffered pre-configure event rather than the current screen.
 - Calling `configure()` a second time causes some previously buffered events to vanish with no error; they were written to a disposed core.
-- Under concurrent `setContext()` calls, a single event captures a mismatched URL-and-referrer pair (new URL, old referrer).
+- Under concurrent `setNavContext()` calls, a single event captures a mismatched URL-and-referrer pair (new URL, old referrer).
 - Bug is intermittent and load-dependent — disappears under a debugger or light load.
 
 ## What Didn't Work
 
-**Activating core before replay (original approach):** The original code set `core = newCore` synchronously before launching the replay coroutine. Because `core` was immediately visible to all threads, `fireAndForget()` dispatched live events directly to the core while the replay loop was still swapping the shared `contextProvider` context per action, producing incorrect attribution data.
+**Activating core before replay (original approach):** The original code set `core = newCore` synchronously before launching the replay coroutine. Because `core` was immediately visible to all threads, `fireAndForget()` dispatched live events directly to the core while the replay loop was still processing buffered actions with their captured context, producing incorrect attribution data for concurrent live events.
 
 **Separate replay scope (earlier iteration):** Replay previously ran on `CoroutineScope(Dispatchers.IO)` stored in a field called `replayScope`. This scope was never cancelled when `configure()` or `reset()` was called again, so the old replay kept appending to a disposed `SearchCollectorCore` — events were silently discarded with no log.
 
-**Two separate `@Volatile` fields for URL and referrer:** Reading `cachedUrl` and then `cachedReferrer` as two distinct volatile reads gave no atomicity guarantee. A concurrent `setContext()` call between the two reads produced a torn context snapshot (new URL, old referrer).
+**Two separate `@Volatile` fields for URL and referrer:** Reading `cachedUrl` and then `cachedReferrer` as two distinct volatile reads gave no atomicity guarantee. A concurrent `setNavContext()` call between the two reads produced a torn context snapshot (new URL, old referrer).
 
 ## Solution
 
@@ -72,13 +72,11 @@ fun configure(config: SearchCollectorConfig) {
         pendingCore = newCore
         newCore.launch {
             for (action in pending) {
-                newCore.setContext(action.url, action.referrer)
                 val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
-                runCatching { action.block(newCore, ts) }
+                // url/ref are passed directly — no shared-state mutation
+                runCatching { action.block(newCore, ts, action.url, action.referrer) }
                     .onFailure { err -> newCore.logReplayError(err) }
             }
-            val (rUrl, rRef) = cachedContext.get()
-            newCore.setContext(rUrl, rRef)
 
             // Activate only if not displaced by a subsequent configure()/reset()
             if (pendingCore === newCore) {
@@ -89,14 +87,9 @@ fun configure(config: SearchCollectorConfig) {
                 val lateArrivals = mutableListOf<PendingAction>()
                 while (true) { lateArrivals.add(pendingActions.poll() ?: break) }
                 for (action in lateArrivals) {
-                    newCore.setContext(action.url, action.referrer)
                     val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
-                    runCatching { action.block(newCore, ts) }
+                    runCatching { action.block(newCore, ts, action.url, action.referrer) }
                         .onFailure { err -> newCore.logReplayError(err) }
-                }
-                if (lateArrivals.isNotEmpty()) {
-                    val (lUrl, lRef) = cachedContext.get()
-                    newCore.setContext(lUrl, lRef)
                 }
             }
         }
@@ -128,22 +121,22 @@ Replace two separate `@Volatile` fields with an `AtomicReference<Pair<String,Str
 @Volatile private var cachedUrl: String = ""
 @Volatile private var cachedReferrer: String = ""
 
-// After (atomic snapshot):
+// After (atomic snapshot, captured at call time for every event):
 private val cachedContext = AtomicReference("" to "")
 
-fun setContext(url: String, referrer: String = "") {
+fun setNavContext(url: String, referrer: String = "") {
     cachedContext.set(url to referrer)
-    core?.setContext(url, referrer)
+    // No delegation to core — Core no longer holds per-event URL/referrer.
 }
 
-private fun fireAndForget(block: suspend (SearchCollectorCore, Long) -> Unit) {
+private fun fireAndForget(block: suspend (SearchCollectorCore, Long, String, String) -> Unit) {
     if (isDisabled) return
     val ts = System.currentTimeMillis()
+    val (url, ref) = cachedContext.get()   // atomic snapshot — always, not just when buffering
     val currentCore = core
     if (currentCore != null) {
-        currentCore.launch { block(currentCore, ts) }
+        currentCore.launch { block(currentCore, ts, url, ref) }
     } else {
-        val (url, ref) = cachedContext.get()   // atomic snapshot — no torn read
         pendingActions.add(PendingAction(ts, url, ref, block))
         if (pendingActions.size > maxPendingActions) pendingActions.poll()
     }
@@ -152,15 +145,17 @@ private fun fireAndForget(block: suspend (SearchCollectorCore, Long) -> Unit) {
 
 ## Why This Works
 
-The root cause was that `core` — the field consulted by every `fireAndForget()` call — was made non-null before the replay coroutine had finished mutating the shared `contextProvider`. That created a window in which live events and replay events raced on the same mutable state.
+The root cause was that `core` — the field consulted by every `fireAndForget()` call — was made non-null before the replay coroutine had finished, and URL/referrer were read lazily at async processing time rather than captured atomically at call time.
 
-Keeping `core` null during replay closes that window entirely: `fireAndForget()` takes the else branch and appends to `pendingActions` rather than dispatching into a racing core. The `pendingCore === newCore` identity check ensures only the most-recently-started replay can graduate to become `core`, making all core-activation transitions linearisable. Binding replay to `newCore.scope` means every outstanding replay job is torn down atomically with the core it writes to, eliminating silent event loss. The `AtomicReference` removes the last torn-read window for the URL-referrer pair.
+Keeping `core` null during replay closes the replay-race window entirely: `fireAndForget()` takes the else branch and appends to `pendingActions` rather than dispatching into a racing core. The `pendingCore === newCore` identity check ensures only the most-recently-started replay can graduate to become `core`, making all core-activation transitions linearisable. Binding replay to `newCore.scope` means every outstanding replay job is torn down atomically with the core it writes to, eliminating silent event loss.
+
+The `AtomicReference` and call-time context snapshot together close the remaining window: `fireAndForget()` reads `cachedContext` atomically before branching on `currentCore`, so both live and buffered events always carry the URL/referrer that was current at the moment the caller invoked the tracking method. `SearchCollectorCore` no longer reads URL or referrer from `BrowserInfoProvider` at all — those values travel through the block parameters, making context attribution a pure data-flow rather than a shared-state read.
 
 ## Prevention
 
 - **Never expose a singleton reference that a background coroutine is still mutating.** If an init or replay phase must mutate shared state, delay publishing the reference until after that phase completes — or use an identity guard inside the coroutine to gate activation.
 - **Tie coroutine scopes to the object lifecycle.** Background work that writes to a component must launch on that component's own scope so `dispose()` guarantees no further writes occur.
-- **Replace parallel `@Volatile` reads with `AtomicReference`.** Two adjacent volatile reads are not atomic under concurrent writes. Group logically-coupled fields into a single immutable data class wrapped in `AtomicReference`.
+- **Replace parallel `@Volatile` reads with `AtomicReference`, and snapshot at call time.** Two adjacent volatile reads are not atomic under concurrent writes. Group logically-coupled fields into a single immutable data class wrapped in `AtomicReference`, and read the snapshot before any branching — including for live events, not only for the buffered-event path. Pass the captured values through the call chain as parameters; do not re-read shared state asynchronously at processing time.
 - **Test late arrivals during replay.** Buffer an event before `configure()`, call `configure()`, immediately buffer a second event (before replay settles), then assert both events appear with the correct context in the final queue.
 - **Test that `reset()` during replay leaves the collector clean.** Call `reset()` immediately after `configure()` and verify no stale events appear after a subsequent `configure()` and flush.
 

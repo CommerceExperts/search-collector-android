@@ -48,13 +48,13 @@ SearchCollector (object)          ← Public singleton API, fire-and-forget faca
             ├── SessionStore      ← Session ID persistence (SharedPreferences / InMemory)
             ├── TrailStore        ← Product→query attribution map (SharedPreferences / InMemory)
             ├── EventQueue        ← Event buffer (InMemory / SharedPreferences)
-            ├── ContextProvider   ← URL, referrer, user-agent (AndroidContextProvider / custom)
+            ├── BrowserInfoProvider ← User-Agent, language, touch (AndroidBrowserInfoProvider / custom)
             └── TimestampProvider ← Current time
 ```
 
 All six dependencies are interfaces (`io.searchhub.collector.interfaces`) with concrete implementations under `io.searchhub.collector.impl.*`. Every component is swappable via `DependencyOverrides` in `SearchCollectorConfig`.
 
-**Pre-configure buffering:** Calls made before `SearchCollector.configure()` are stored in a `ConcurrentLinkedQueue<PendingAction>` and replayed (on `Dispatchers.IO`) once `configure()` runs. The `bufferedEventsTimestamp` config flag controls whether replayed events use their original timestamp or the current time.
+**Pre-configure buffering:** Calls made before `SearchCollector.configure()` are stored in a `ConcurrentLinkedQueue<PendingAction>` and replayed (on `Dispatchers.IO`) once `configure()` runs. The `bufferedEventsTimestamp` config flag controls whether replayed events use their original timestamp or the current time. Each `PendingAction` carries its own url/referrer snapshot (captured atomically via `AtomicReference` at call time), so per-event context attribution is correct even when `setNavContext()` is called between events. Live events (when `core != null`) also snapshot context at `fireAndForget()` call time — `SearchCollectorCore` never reads URL or referrer from `BrowserInfoProvider`; those values come exclusively from the caller via block parameters.
 
 **Flush triggers:** Three things trigger a flush:
 1. Auto-flush timer (default every 5 s, runs in `SearchCollectorCore.scope`)
@@ -79,9 +79,9 @@ Attribution events (`Product`, `AssociatedProduct`, `Basket`, `Checkout`) carry 
 io.searchhub.collector
 ├── SearchCollector.kt          ← public API (object)
 ├── SearchCollectorCore.kt      ← internal orchestrator
-├── interfaces/                 ← Transport, EventQueue, SessionStore, TrailStore, ContextProvider, TimestampProvider, Logger
+├── interfaces/                 ← Transport, EventQueue, SessionStore, TrailStore, BrowserInfoProvider, TimestampProvider, Logger
 ├── impl/
-│   ├── context/                ← AndroidContextProvider
+│   ├── context/                ← AndroidBrowserInfoProvider
 │   ├── queue/                  ← InMemoryEventQueue, SharedPreferencesEventQueue
 │   ├── session/                ← SharedPreferencesSessionStore, InMemorySessionStore
 │   ├── timestamp/              ← SystemTimestampProvider

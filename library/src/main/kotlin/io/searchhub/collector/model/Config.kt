@@ -38,6 +38,6 @@ data class DependencyOverrides(
     val sessionStore: SessionStore? = null,
     val trailStore: TrailStore? = null,
     val eventQueue: EventQueue? = null,
-    val contextProvider: ContextProvider? = null,
+    val browserInfoProvider: BrowserInfoProvider? = null,
     val timestampProvider: TimestampProvider? = null,
 )

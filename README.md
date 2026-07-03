@@ -110,13 +110,13 @@ SearchCollector.trackCheckout(
 )
 ```
 
-### 3. Set the current screen URL (recommended)
+### 3. Set the current screen context (recommended)
 
-Android has no concept of a browser URL. Call `setContext` whenever the user navigates to a new screen. The values are attached to every subsequent event:
+Android has no concept of a browser URL. Call `setNavContext` whenever the user navigates to a new screen. The values are attached to every subsequent event:
 
 ```kotlin
 // Call on every screen change — safe to call before or after configure()
-SearchCollector.setContext(
+SearchCollector.setNavContext(
     url = "app://my-app/search?q=jeans",
     referrer = "app://my-app/home",   // optional
 )
@@ -129,7 +129,7 @@ Events buffered before `configure()` capture the context at the time they were q
 | Method | When to call |
 |---|---|
 | `initialize()` | Once on app start |
-| `setContext(url, referrer?)` | On every screen navigation |
+| `setNavContext(url, referrer?)` | On every screen navigation |
 | `trackInstantSearch(keywords)` | On each search input change (debounced) |
 | `trackFiredSearch(keywords)` | On explicit search submit |
 | `trackSuggestClick(keywords, prefix, position)` | On autocomplete suggestion click |
@@ -254,7 +254,7 @@ SearchCollectorConfig(
         sessionStore = mySessionStore,
         trailStore = myTrailStore,
         eventQueue = myEventQueue,
-        contextProvider = myContextProvider,
+        browserInfoProvider = myBrowserInfoProvider,
         timestampProvider = myTimestampProvider,
     ),
 )
@@ -332,7 +332,7 @@ SearchCollector (object)          ← Public singleton API
             ├── SessionStore      ← Session ID (SharedPreferences / InMemory)
             ├── TrailStore        ← Product→query mapping (SharedPreferences / InMemory)
             ├── EventQueue        ← Event buffer (InMemory / SharedPreferences)
-            ├── ContextProvider   ← URL, user agent, language (Android / Custom)
+            ├── BrowserInfoProvider ← User-Agent, language, touch (Android / Custom)
             └── TimestampProvider ← Timestamps
 ```
 
