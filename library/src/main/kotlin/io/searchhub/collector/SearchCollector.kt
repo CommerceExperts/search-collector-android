@@ -17,7 +17,9 @@ import io.searchhub.collector.impl.timestamp.SystemTimestampProvider
 import io.searchhub.collector.impl.trail.SharedPreferencesTrailStore
 import io.searchhub.collector.impl.transport.ShSqsTransport
 import io.searchhub.collector.interfaces.DebugCapable
+import io.searchhub.collector.interfaces.Logger
 import io.searchhub.collector.interfaces.consoleLogger
+import io.searchhub.collector.interfaces.createFilteredLogger
 import io.searchhub.collector.model.BufferedEventsTimestamp
 import io.searchhub.collector.model.CheckoutProduct
 import io.searchhub.collector.model.DependencyOverrides
@@ -65,6 +67,9 @@ object SearchCollector {
 
     private val pendingActions = ConcurrentLinkedQueue<PendingAction>()
 
+    @Volatile
+    private var logger: Logger = consoleLogger
+
     /**
      * Configure and initialize the collector. Must be called before events can be sent.
      * Safe to call multiple times — disposes the previous instance first.
@@ -74,6 +79,7 @@ object SearchCollector {
     fun configure(config: SearchCollectorConfig) {
         isDisabled = false
         maxPendingActions = config.queueSettings.maxPendingActions
+        logger = createFilteredLogger(config.logger ?: consoleLogger, config.logLevel)
 
         val appContext = config.context.applicationContext
         this.appContext = appContext
@@ -160,7 +166,7 @@ object SearchCollector {
         for (action in actions) {
             val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
             runCatching { action.block(newCore, ts, action.url, action.referrer) }
-                .onFailure { err -> newCore.logReplayError(err) }
+                .onFailure { err -> logger.error("Replay error — pre-configure event lost", err) }
         }
     }
 
