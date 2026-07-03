@@ -9,7 +9,7 @@ import io.searchhub.collector.impl.session.InMemorySessionStore
 import io.searchhub.collector.impl.timestamp.SystemTimestampProvider
 import io.searchhub.collector.impl.trail.InMemoryTrailStore
 import io.searchhub.collector.impl.transport.ShSqsTransport
-import io.searchhub.collector.interfaces.ContextProvider
+import io.searchhub.collector.interfaces.BrowserInfoProvider
 import io.searchhub.collector.interfaces.Transport
 import io.searchhub.collector.interfaces.silentLogger
 import io.searchhub.collector.model.*
@@ -427,13 +427,13 @@ class SearchCollectorTest {
         assertEquals(1, sentBatches.size)
     }
 
-    // --- U2: setContext() ---
+    // --- U2: setNavContext() ---
 
     @Test
-    fun `setContext after configure propagates to events`() = runTest {
+    fun `setNavContext after configure propagates to events`() = runTest {
         // AE4
         SearchCollector.configure(makeConfig())
-        SearchCollector.setContext("pdp/12345", "search/results")
+        SearchCollector.setNavContext("pdp/12345", "search/results")
         SearchCollector.trackFiredSearch("jeans")
         Thread.sleep(300)
         SearchCollector.flush()
@@ -444,11 +444,11 @@ class SearchCollectorTest {
     }
 
     @Test
-    fun `setContext captures per-event url before configure`() = runTest {
+    fun `setNavContext captures per-event url before configure`() = runTest {
         // AE5: each pre-configure event carries the context at the time it was buffered
-        SearchCollector.setContext("home", "")
+        SearchCollector.setNavContext("home", "")
         SearchCollector.trackFiredSearch("jeans")
-        SearchCollector.setContext("pdp", "home")
+        SearchCollector.setNavContext("pdp", "home")
         SearchCollector.trackFiredSearch("blue jeans")
         SearchCollector.configure(makeConfig())
         Thread.sleep(300)
@@ -462,9 +462,9 @@ class SearchCollectorTest {
     }
 
     @Test
-    fun `setContext while disabled is cached and applied after configure`() = runTest {
+    fun `setNavContext while disabled is cached and applied after configure`() = runTest {
         SearchCollector.disable()
-        SearchCollector.setContext("pdp/999", "home")
+        SearchCollector.setNavContext("pdp/999", "home")
         SearchCollector.configure(makeConfig())
         SearchCollector.trackFiredSearch("shoes")
         Thread.sleep(300)
@@ -476,35 +476,33 @@ class SearchCollectorTest {
     }
 
     @Test
-    fun `setContext with custom ContextProvider no-op does not crash`() = runTest {
-        val customProvider = object : ContextProvider {
-            override suspend fun getCurrentUrl() = "custom-url"
-            override suspend fun getReferrer() = "custom-ref"
+    fun `setNavContext url and ref take effect even with a custom BrowserInfoProvider`() = runTest {
+        val customProvider = object : BrowserInfoProvider {
             override suspend fun getUserAgent() = "custom-agent"
             override suspend fun isTouchDevice() = false
             override suspend fun getLanguage() = "en"
-            // setContext() inherits the default no-op
         }
         SearchCollector.configure(makeConfig().copy(
-            overrides = makeConfig().overrides.copy(contextProvider = customProvider)
+            overrides = makeConfig().overrides.copy(browserInfoProvider = customProvider)
         ))
-        SearchCollector.setContext("some/screen", "previous") // must not crash
+        SearchCollector.setNavContext("some/screen", "previous")
         SearchCollector.trackFiredSearch("jeans")
         Thread.sleep(300)
         SearchCollector.flush()
         assertEquals(1, sentBatches.size)
         val event = sentBatches[0][0] as SearchCollectorEvent.FiredSearch
-        // custom provider returns its own values, not the ones from setContext
-        assertEquals("custom-url", event.url)
+        // url/ref are captured at call time from cachedContext, not from the custom provider
+        assertEquals("some/screen", event.url)
+        assertEquals("previous", event.ref)
     }
 
     @Test
     fun `post-replay context restore applies cached context to subsequent active events`() = runTest {
-        SearchCollector.setContext("final-screen", "prev")
+        SearchCollector.setNavContext("final-screen", "prev")
         // Buffer one event with a different per-event context
-        SearchCollector.setContext("first-screen", "")
+        SearchCollector.setNavContext("first-screen", "")
         SearchCollector.trackFiredSearch("buffered")
-        SearchCollector.setContext("final-screen", "prev")
+        SearchCollector.setNavContext("final-screen", "prev")
         SearchCollector.configure(makeConfig())
         Thread.sleep(300)
         // After replay, active events should carry the final cached context

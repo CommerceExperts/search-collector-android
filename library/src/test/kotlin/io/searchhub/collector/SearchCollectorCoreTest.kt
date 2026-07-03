@@ -5,7 +5,7 @@ import io.searchhub.collector.impl.session.InMemorySessionStore
 import io.searchhub.collector.impl.timestamp.SystemTimestampProvider
 import io.searchhub.collector.impl.trail.InMemoryTrailStore
 import io.searchhub.collector.impl.transport.ShSqsTransport
-import io.searchhub.collector.interfaces.ContextProvider
+import io.searchhub.collector.interfaces.BrowserInfoProvider
 import io.searchhub.collector.interfaces.SessionStore
 import io.searchhub.collector.interfaces.TrailStore
 import io.searchhub.collector.interfaces.Transport
@@ -40,9 +40,7 @@ class SearchCollectorCoreTest {
         }
     }
 
-    private val fakeContext = object : ContextProvider {
-        override suspend fun getCurrentUrl() = "https://example.com/search"
-        override suspend fun getReferrer() = ""
+    private val fakeBrowserInfo = object : BrowserInfoProvider {
         override suspend fun getUserAgent() = "TestAgent/1.0"
         override suspend fun isTouchDevice() = true
         override suspend fun getLanguage() = "de-DE"
@@ -53,13 +51,13 @@ class SearchCollectorCoreTest {
         eventQueue: InMemoryEventQueue = queue,
         transport: Transport = fakeTransport,
         sessionStore: SessionStore = InMemorySessionStore(),
-        contextProvider: ContextProvider = fakeContext,
+        browserInfoProvider: BrowserInfoProvider = fakeBrowserInfo,
     ) = SearchCollectorCore(
         transport = transport,
         sessionStore = sessionStore,
         trailStore = trailStore,
         eventQueue = eventQueue,
-        contextProvider = contextProvider,
+        browserInfoProvider = browserInfoProvider,
         timestampProvider = SystemTimestampProvider(),
         channel = "de",
         maxBatchSize = 10,
@@ -135,7 +133,7 @@ class SearchCollectorCoreTest {
             sessionStore = InMemorySessionStore(),
             trailStore = InMemoryTrailStore(),
             eventQueue = smallQueue,
-            contextProvider = fakeContext,
+            browserInfoProvider = fakeBrowserInfo,
             timestampProvider = SystemTimestampProvider(),
             channel = "de",
             maxBatchSize = 2,
@@ -352,27 +350,14 @@ class SearchCollectorCoreTest {
         c.dispose()
     }
 
-    // --- setContext ---
+    // --- url/ref parameter passthrough ---
 
     @Test
-    fun `setContext updates url and ref on subsequent events`() = runTest {
-        val mutableContext = object : ContextProvider {
-            private var url = ""
-            private var ref = ""
-            override suspend fun getCurrentUrl() = url
-            override suspend fun getReferrer() = ref
-            override suspend fun getUserAgent() = "TestAgent"
-            override suspend fun isTouchDevice() = true
-            override suspend fun getLanguage() = "de-DE"
-            override fun setContext(url: String, referrer: String) { this.url = url; this.ref = referrer }
-        }
-        val c = makeCore(contextProvider = mutableContext)
-        c.setContext("pdp/123", "search/results")
-        c.trackFiredSearch("jeans")
+    fun `url and ref parameters appear in emitted events`() = runTest {
+        core.trackFiredSearch("jeans", url = "pdp/123", ref = "search/results")
         val event = queue.drain()[0] as SearchCollectorEvent.FiredSearch
         assertEquals("pdp/123", event.url)
         assertEquals("search/results", event.ref)
-        c.dispose()
     }
 
     @Test

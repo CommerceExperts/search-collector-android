@@ -1,8 +1,33 @@
 package io.searchhub.collector
 
-import io.searchhub.collector.interfaces.*
-import io.searchhub.collector.model.*
-import kotlinx.coroutines.*
+import io.searchhub.collector.interfaces.BrowserInfoProvider
+import io.searchhub.collector.interfaces.DebugCapable
+import io.searchhub.collector.interfaces.EventQueue
+import io.searchhub.collector.interfaces.Logger
+import io.searchhub.collector.interfaces.SessionStore
+import io.searchhub.collector.interfaces.TimestampProvider
+import io.searchhub.collector.interfaces.TrailStore
+import io.searchhub.collector.interfaces.Transport
+import io.searchhub.collector.interfaces.createFilteredLogger
+import io.searchhub.collector.model.CheckoutProduct
+import io.searchhub.collector.model.LogLevel
+import io.searchhub.collector.model.ProductPosition
+import io.searchhub.collector.model.SearchAction
+import io.searchhub.collector.model.SearchCollectorEvent
+import io.searchhub.collector.model.SuggestData
+import io.searchhub.collector.model.SuggestProductData
+import io.searchhub.collector.model.TrailType
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -11,7 +36,7 @@ internal class SearchCollectorCore(
     private val sessionStore: SessionStore,
     private val trailStore: TrailStore,
     private val eventQueue: EventQueue,
-    private val contextProvider: ContextProvider,
+    private val browserInfoProvider: BrowserInfoProvider,
     private val timestampProvider: TimestampProvider,
     private val channel: String,
     private val maxBatchSize: Int,
@@ -25,14 +50,11 @@ internal class SearchCollectorCore(
     private var autoFlushJob: Job? = null
     private val debugCapable: DebugCapable? = transport as? DebugCapable
 
-    @Volatile var debugSessionToken: String? = null
+    @Volatile
+    var debugSessionToken: String? = null
 
     init {
         startAutoFlush()
-    }
-
-    fun setContext(url: String, referrer: String) {
-        contextProvider.setContext(url, referrer)
     }
 
     fun logReplayError(err: Throwable) {
@@ -45,11 +67,15 @@ internal class SearchCollectorCore(
         }
     }
 
-    suspend fun trackBrowser(timestampMs: Long = timestampProvider.now()) {
-        val agent = contextProvider.getUserAgent()
-        val touch = contextProvider.isTouchDevice()
-        val lang = contextProvider.getLanguage()
-        val common = getCommonProperties(timestampMs)
+    suspend fun trackBrowser(
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
+        val agent = browserInfoProvider.getUserAgent()
+        val touch = browserInfoProvider.isTouchDevice()
+        val lang = browserInfoProvider.getLanguage()
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.Browser(
                 timestamp = common.timestamp,
@@ -64,9 +90,14 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackInstantSearch(keywords: String, timestampMs: Long = timestampProvider.now()) {
+    suspend fun trackInstantSearch(
+        keywords: String,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
         val query = formatQuery(keywords)
-        val common = getCommonProperties(timestampMs)
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.InstantSearch(
                 timestamp = common.timestamp,
@@ -80,9 +111,14 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackFiredSearch(keywords: String, timestampMs: Long = timestampProvider.now()) {
+    suspend fun trackFiredSearch(
+        keywords: String,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
         val query = formatQuery(keywords)
-        val common = getCommonProperties(timestampMs)
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.FiredSearch(
                 timestamp = common.timestamp,
@@ -96,9 +132,16 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackSuggestClick(keywords: String, prefix: String, position: Int, timestampMs: Long = timestampProvider.now()) {
+    suspend fun trackSuggestClick(
+        keywords: String,
+        prefix: String,
+        position: Int,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
         val query = formatQuery(keywords)
-        val common = getCommonProperties(timestampMs)
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.SuggestSearch(
                 timestamp = common.timestamp,
@@ -113,9 +156,17 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackSuggestProductClick(keywords: String, prefix: String, position: Int, productId: String, timestampMs: Long = timestampProvider.now()) {
+    suspend fun trackSuggestProductClick(
+        keywords: String,
+        prefix: String,
+        position: Int,
+        productId: String,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
         val query = formatQuery(keywords)
-        val common = getCommonProperties(timestampMs)
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.SuggestProductClick(
                 timestamp = common.timestamp,
@@ -130,9 +181,16 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackSearch(keywords: String, count: Int, action: SearchAction, timestampMs: Long = timestampProvider.now()) {
+    suspend fun trackSearch(
+        keywords: String,
+        count: Int,
+        action: SearchAction,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
         val query = formatQuery(keywords)
-        val common = getCommonProperties(timestampMs)
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.Search(
                 timestamp = common.timestamp,
@@ -148,9 +206,15 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackRedirect(keywords: String, resultCount: Int, timestampMs: Long = timestampProvider.now()) {
+    suspend fun trackRedirect(
+        keywords: String,
+        resultCount: Int,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
         val query = formatQuery(keywords)
-        val common = getCommonProperties(timestampMs)
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.Redirect(
                 timestamp = common.timestamp,
@@ -165,8 +229,14 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackImpression(keywords: String, products: List<ProductPosition>, timestampMs: Long = timestampProvider.now()) {
-        val common = getCommonProperties(timestampMs)
+    suspend fun trackImpression(
+        keywords: String,
+        products: List<ProductPosition>,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.Impression(
                 timestamp = common.timestamp,
@@ -180,10 +250,17 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackProductClick(productId: String, position: Int, keywords: String, timestampMs: Long = timestampProvider.now()) {
+    suspend fun trackProductClick(
+        productId: String,
+        position: Int,
+        keywords: String,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
         val query = formatQuery(keywords)
         trailStore.register(productId, query, TrailType.MAIN)
-        val common = getCommonProperties(timestampMs)
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.Product(
                 timestamp = common.timestamp,
@@ -198,10 +275,17 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackAssociatedProductClick(productId: String, position: Int, keywords: String, timestampMs: Long = timestampProvider.now()) {
+    suspend fun trackAssociatedProductClick(
+        productId: String,
+        position: Int,
+        keywords: String,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
         val query = formatQuery(keywords)
         trailStore.register(productId, query, TrailType.ASSOCIATED)
-        val common = getCommonProperties(timestampMs)
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.AssociatedProduct(
                 timestamp = common.timestamp,
@@ -217,9 +301,15 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackBasket(productId: String, price: Double, timestampMs: Long = timestampProvider.now()) {
+    suspend fun trackBasket(
+        productId: String,
+        price: Double,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
         val trail = trailStore.get(productId)
-        val common = getCommonProperties(timestampMs)
+        val common = getCommonProperties(url, ref, timestampMs)
         enqueue(
             SearchCollectorEvent.Basket(
                 timestamp = common.timestamp,
@@ -235,10 +325,15 @@ internal class SearchCollectorCore(
         )
     }
 
-    suspend fun trackCheckout(products: List<CheckoutProduct>, timestampMs: Long = timestampProvider.now()) {
+    suspend fun trackCheckout(
+        products: List<CheckoutProduct>,
+        timestampMs: Long = timestampProvider.now(),
+        url: String = "",
+        ref: String = "",
+    ) {
         for (product in products) {
             val trail = trailStore.get(product.id)
-            val common = getCommonProperties(timestampMs)
+            val common = getCommonProperties(url, ref, timestampMs)
             enqueue(
                 SearchCollectorEvent.Checkout(
                     timestamp = common.timestamp,
@@ -312,11 +407,13 @@ internal class SearchCollectorCore(
         }
     }
 
-    private suspend fun getCommonProperties(timestampMs: Long = timestampProvider.now()): CommonProperties {
+    private suspend fun getCommonProperties(
+        url: String,
+        ref: String,
+        timestampMs: Long
+    ): CommonProperties {
         sessionStore.touch()
         val session = debugSessionToken ?: sessionStore.getOrCreateSessionId()
-        val url = contextProvider.getCurrentUrl()
-        val ref = contextProvider.getReferrer()
         return CommonProperties(
             timestamp = timestampMs,
             session = session,
@@ -370,7 +467,10 @@ internal class SearchCollectorCore(
 
     private fun estimateBatchSize(batch: List<SearchCollectorEvent>): Int {
         val json = kotlinx.serialization.json.Json { encodeDefaults = true }
-        val jsonStr = json.encodeToString(kotlinx.serialization.builtins.ListSerializer(SearchCollectorEvent.serializer()), batch)
+        val jsonStr = json.encodeToString(
+            kotlinx.serialization.builtins.ListSerializer(SearchCollectorEvent.serializer()),
+            batch
+        )
         val utf8Bytes = jsonStr.toByteArray(Charsets.UTF_8).size
         return (utf8Bytes * 4 + 2) / 3  // base64 overhead ~33%
     }

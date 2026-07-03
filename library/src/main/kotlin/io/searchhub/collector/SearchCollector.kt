@@ -6,7 +6,8 @@ import io.searchhub.collector.SearchCollector.DEBUG_TOKEN_PARAM
 import io.searchhub.collector.SearchCollector.configure
 import io.searchhub.collector.SearchCollector.extractDebugToken
 import io.searchhub.collector.SearchCollector.flush
-import io.searchhub.collector.impl.context.AndroidContextProvider
+import io.searchhub.collector.SearchCollector.setNavContext
+import io.searchhub.collector.impl.context.AndroidBrowserInfoProvider
 import io.searchhub.collector.impl.queue.BASE_PREFS_KEY
 import io.searchhub.collector.impl.queue.InMemoryEventQueue
 import io.searchhub.collector.impl.session.SharedPreferencesSessionStore
@@ -32,7 +33,7 @@ import io.searchhub.collector.impl.trail.PREFS_NAME as TRAIL_PREFS_NAME
  *
  * Usage:
  * 1. Call [configure] once on app start (e.g. in Application.onCreate).
- * 2. Optionally call [setContext] whenever the user navigates to a new screen.
+ * 2. Optionally call [setNavContext] whenever the user navigates to a new screen.
  * 3. Call tracking methods anywhere — they are fire-and-forget and safe to call before [configure].
  * 4. Optionally call [flush] or [flushAsync] to force-send all queued events.
  *
@@ -85,7 +86,9 @@ object SearchCollector {
         val transport = config.overrides.transport
             ?: ShSqsTransport(
                 queueUrl = config.endpoint,
-                debugEnabled = config.debugRouting?.let { it.enabled ?: (Build.VERSION.CODENAME != "REL") } ?: false,
+                debugEnabled = config.debugRouting?.let {
+                    it.enabled ?: (Build.VERSION.CODENAME != "REL")
+                } ?: false,
                 debugEndpoint = config.debugRouting?.debugEndpoint,
             )
         val sessionStore = config.overrides.sessionStore
@@ -94,20 +97,17 @@ object SearchCollector {
             ?: SharedPreferencesTrailStore(appContext)
         val eventQueue = config.overrides.eventQueue
             ?: InMemoryEventQueue(config.queueSettings.maxBatchSize)
-        val contextProvider = config.overrides.contextProvider
-            ?: AndroidContextProvider(appContext)
+        val browserInfoProvider = config.overrides.browserInfoProvider
+            ?: AndroidBrowserInfoProvider()
         val timestampProvider = config.overrides.timestampProvider
             ?: SystemTimestampProvider()
-
-        val (cUrl, cRef) = cachedContext.get()
-        contextProvider.setContext(cUrl, cRef)
 
         val newCore = SearchCollectorCore(
             transport = transport,
             sessionStore = sessionStore,
             trailStore = trailStore,
             eventQueue = eventQueue,
-            contextProvider = contextProvider,
+            browserInfoProvider = browserInfoProvider,
             timestampProvider = timestampProvider,
             channel = config.channel,
             maxBatchSize = config.queueSettings.maxBatchSize,
@@ -126,8 +126,8 @@ object SearchCollector {
         }
 
         // Drain pending actions while core==null. core is assigned at the END of replay
-        // so that live events concurrent with replay see the correct per-event context,
-        // not the temporary URL set for each replayed action.
+        // so that live events arriving during replay buffer into pendingActions and carry
+        // their own context snapshot — they are not affected by per-action context mutations.
         val pending = mutableListOf<PendingAction>()
         while (true) {
             pending.add(pendingActions.poll() ?: break)
@@ -137,13 +137,10 @@ object SearchCollector {
             pendingCore = newCore
             newCore.launch {
                 for (action in pending) {
-                    newCore.setContext(action.url, action.referrer)
                     val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
-                    runCatching { action.block(newCore, ts) }
+                    runCatching { action.block(newCore, ts, action.url, action.referrer) }
                         .onFailure { err -> newCore.logReplayError(err) }
                 }
-                val (rUrl, rRef) = cachedContext.get()
-                newCore.setContext(rUrl, rRef)
 
                 // Activate only if reset()/configure() hasn't displaced this replay
                 if (pendingCore === newCore) {
@@ -152,16 +149,13 @@ object SearchCollector {
 
                     // Drain events that buffered in pendingActions while replay was running
                     val lateArrivals = mutableListOf<PendingAction>()
-                    while (true) { lateArrivals.add(pendingActions.poll() ?: break) }
-                    for (action in lateArrivals) {
-                        newCore.setContext(action.url, action.referrer)
-                        val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
-                        runCatching { action.block(newCore, ts) }
-                            .onFailure { err -> newCore.logReplayError(err) }
+                    while (true) {
+                        lateArrivals.add(pendingActions.poll() ?: break)
                     }
-                    if (lateArrivals.isNotEmpty()) {
-                        val (lUrl, lRef) = cachedContext.get()
-                        newCore.setContext(lUrl, lRef)
+                    for (action in lateArrivals) {
+                        val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
+                        runCatching { action.block(newCore, ts, action.url, action.referrer) }
+                            .onFailure { err -> newCore.logReplayError(err) }
                     }
                 }
             }
@@ -171,16 +165,16 @@ object SearchCollector {
     }
 
     /**
-     * Update the current screen context. In native Android apps, [url] is the current screen
-     * identifier (e.g. a deep-link path or screen name) and [referrer] is the previous screen —
-     * not HTTP URLs. Always caches the values regardless of collector state; also delegates to
-     * the active core when [configure] has been called.
+     * Update the current screen navigation context. Call whenever the user navigates to a new
+     * screen. [url] is the current screen identifier (e.g. a deep-link path or screen name) and
+     * [referrer] is the previous screen — not HTTP URLs. Safe to call before or after [configure].
+     * Each tracking call snapshots the current context atomically, so per-event attribution is
+     * correct even when navigation happens between calls.
      */
     @JvmStatic
     @JvmOverloads
-    fun setContext(url: String, referrer: String = "") {
+    fun setNavContext(url: String, referrer: String = "") {
         cachedContext.set(url to referrer)
-        core?.setContext(url, referrer)
     }
 
     /**
@@ -205,7 +199,7 @@ object SearchCollector {
 
     /** Send a browser event with device info. Call once on app/screen start. */
     @JvmStatic
-    fun initialize() = fireAndForget { core, ts -> core.trackBrowser(ts) }
+    fun initialize() = fireAndForget { core, ts, url, ref -> core.trackBrowser(ts, url, ref) }
 
     /**
      * Track the query as the user types. Debounce recommended.
@@ -213,7 +207,7 @@ object SearchCollector {
      */
     @JvmStatic
     fun trackInstantSearch(keywords: String) =
-        fireAndForget { core, ts -> core.trackInstantSearch(keywords, ts) }
+        fireAndForget { core, ts, url, ref -> core.trackInstantSearch(keywords, ts, url, ref) }
 
     /**
      * Track a search query that was explicitly submitted.
@@ -221,7 +215,7 @@ object SearchCollector {
      */
     @JvmStatic
     fun trackFiredSearch(keywords: String) =
-        fireAndForget { core, ts -> core.trackFiredSearch(keywords, ts) }
+        fireAndForget { core, ts, url, ref -> core.trackFiredSearch(keywords, ts, url, ref) }
 
     /**
      * Track a click on a suggest/autocomplete search term.
@@ -231,7 +225,9 @@ object SearchCollector {
      */
     @JvmStatic
     fun trackSuggestClick(keywords: String, prefix: String, position: Int) =
-        fireAndForget { core, ts -> core.trackSuggestClick(keywords, prefix, position, ts) }
+        fireAndForget { core, ts, url, ref ->
+            core.trackSuggestClick(keywords, prefix, position, ts, url, ref)
+        }
 
     /**
      * Track a click on a product shown in autocomplete/suggest results.
@@ -247,14 +243,8 @@ object SearchCollector {
         position: Int,
         productId: String
     ) =
-        fireAndForget { core, ts ->
-            core.trackSuggestProductClick(
-                keywords,
-                prefix,
-                position,
-                productId,
-                ts
-            )
+        fireAndForget { core, ts, url, ref ->
+            core.trackSuggestProductClick(keywords, prefix, position, productId, ts, url, ref)
         }
 
     /**
@@ -266,7 +256,16 @@ object SearchCollector {
     @JvmStatic
     @JvmOverloads
     fun trackSearch(keywords: String, count: Int, action: SearchAction = SearchAction.SEARCH) =
-        fireAndForget { core, ts -> core.trackSearch(keywords, count, action, ts) }
+        fireAndForget { core, ts, url, ref ->
+            core.trackSearch(
+                keywords,
+                count,
+                action,
+                ts,
+                url,
+                ref
+            )
+        }
 
     /**
      * Track a search that resulted in a redirect.
@@ -275,7 +274,15 @@ object SearchCollector {
      */
     @JvmStatic
     fun trackRedirect(keywords: String, resultCount: Int) =
-        fireAndForget { core, ts -> core.trackRedirect(keywords, resultCount, ts) }
+        fireAndForget { core, ts, url, ref ->
+            core.trackRedirect(
+                keywords,
+                resultCount,
+                ts,
+                url,
+                ref
+            )
+        }
 
     /**
      * Track which products were visible on a results page.
@@ -284,7 +291,15 @@ object SearchCollector {
      */
     @JvmStatic
     fun trackImpression(keywords: String, products: List<ProductPosition>) =
-        fireAndForget { core, ts -> core.trackImpression(keywords, products, ts) }
+        fireAndForget { core, ts, url, ref ->
+            core.trackImpression(
+                keywords,
+                products,
+                ts,
+                url,
+                ref
+            )
+        }
 
     /**
      * Track a click on a product in search results. Automatically registers a search trail.
@@ -294,7 +309,9 @@ object SearchCollector {
      */
     @JvmStatic
     fun trackProductClick(productId: String, position: Int, keywords: String) =
-        fireAndForget { core, ts -> core.trackProductClick(productId, position, keywords, ts) }
+        fireAndForget { core, ts, url, ref ->
+            core.trackProductClick(productId, position, keywords, ts, url, ref)
+        }
 
     /**
      * Track a click on an associated/related product (e.g. on a PDP). Automatically registers an associated trail.
@@ -304,13 +321,8 @@ object SearchCollector {
      */
     @JvmStatic
     fun trackAssociatedProductClick(productId: String, position: Int, keywords: String) =
-        fireAndForget { core, ts ->
-            core.trackAssociatedProductClick(
-                productId,
-                position,
-                keywords,
-                ts
-            )
+        fireAndForget { core, ts, url, ref ->
+            core.trackAssociatedProductClick(productId, position, keywords, ts, url, ref)
         }
 
     /**
@@ -320,7 +332,7 @@ object SearchCollector {
      */
     @JvmStatic
     fun trackBasket(productId: String, price: Double) =
-        fireAndForget { core, ts -> core.trackBasket(productId, price, ts) }
+        fireAndForget { core, ts, url, ref -> core.trackBasket(productId, price, ts, url, ref) }
 
     /**
      * Track a completed checkout. One event is sent per product.
@@ -328,7 +340,7 @@ object SearchCollector {
      */
     @JvmStatic
     fun trackCheckout(products: List<CheckoutProduct>) =
-        fireAndForget { core, ts -> core.trackCheckout(products, ts) }
+        fireAndForget { core, ts, url, ref -> core.trackCheckout(products, ts, url, ref) }
 
     /**
      * Manually register a search trail for a product.
@@ -339,7 +351,7 @@ object SearchCollector {
     @JvmStatic
     @JvmOverloads
     fun registerTrail(key: String, query: String, trailType: TrailType = TrailType.MAIN) =
-        fireAndForget { core, _ -> core.registerTrail(key, query, trailType) }
+        fireAndForget { core, _, _, _ -> core.registerTrail(key, query, trailType) }
 
     /**
      * Copy a search trail from one product to another (e.g. when a variant is selected on PDP).
@@ -348,7 +360,7 @@ object SearchCollector {
      */
     @JvmStatic
     fun copyTrail(fromProductId: String, toProductId: String) =
-        fireAndForget { core, _ -> core.copyTrail(fromProductId, toProductId) }
+        fireAndForget { core, _, _, _ -> core.copyTrail(fromProductId, toProductId) }
 
     /**
      * Activate a debug session. Sets [token] as the session ID for all subsequent events and
@@ -437,14 +449,14 @@ object SearchCollector {
         }
     }
 
-    private fun fireAndForget(block: suspend (SearchCollectorCore, Long) -> Unit) {
+    private fun fireAndForget(block: suspend (SearchCollectorCore, Long, String, String) -> Unit) {
         if (isDisabled) return
         val ts = System.currentTimeMillis()
+        val (url, ref) = cachedContext.get()
         val currentCore = core
         if (currentCore != null) {
-            currentCore.launch { block(currentCore, ts) }
+            currentCore.launch { block(currentCore, ts, url, ref) }
         } else {
-            val (url, ref) = cachedContext.get()
             pendingActions.add(PendingAction(ts, url, ref, block))
             if (pendingActions.size > maxPendingActions) pendingActions.poll()
         }
@@ -455,5 +467,5 @@ internal data class PendingAction(
     val timestamp: Long,
     val url: String,
     val referrer: String,
-    val block: suspend (SearchCollectorCore, Long) -> Unit,
+    val block: suspend (SearchCollectorCore, Long, String, String) -> Unit,
 )
