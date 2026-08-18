@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
 
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +29,8 @@ jobs:
       - name: Run tests
         run: ./gradlew testLibraries
 
-      - name: Publish to GitHub Packages
-        run: ./gradlew :library:publishReleasePublicationToGitHubPackagesRepository :library-workmanager:publishReleasePublicationToGitHubPackagesRepository
+      - name: Publish to Nexus
+        run: ./gradlew :library:publishReleasePublicationToNexusRepository :library-workmanager:publishReleasePublicationToNexusRepository
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}

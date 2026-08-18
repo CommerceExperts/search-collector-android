@@ -40,11 +40,17 @@ afterEvaluate {
         }
         repositories {
             maven {
-                name = "GitHubPackages"
-                url = uri("https://maven.pkg.github.com/CommerceExperts/search-collector-android")
+                name = "nexus"
+                val isSnapshot = (project.property("VERSION") as String).endsWith("SNAPSHOT")
+                url = uri(
+                    if (isSnapshot)
+                        "https://nexus.commerce-experts.com/repository/maven-snapshots/"
+                    else
+                        "https://nexus.commerce-experts.com/repository/maven-releases/"
+                )
                 credentials {
-                    username = System.getenv("GITHUB_ACTOR")
-                    password = System.getenv("GITHUB_TOKEN")
+                    username = System.getenv("NEXUS_USERNAME")
+                    password = System.getenv("NEXUS_PASSWORD")
                 }
             }
         }
