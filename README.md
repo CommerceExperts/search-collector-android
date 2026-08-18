@@ -36,7 +36,7 @@
 dependencyResolutionManagement {
     repositories {
         maven {
-            url = uri("https://nexus.commerce-experts.com/repository/maven-releases/")
+            url = uri("https://nexus.commerce-experts.com/content/repositories/searchhub-external/")
         }
     }
 }

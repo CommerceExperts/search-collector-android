@@ -56,9 +56,9 @@ afterEvaluate {
                 val isSnapshot = (project.property("VERSION") as String).endsWith("SNAPSHOT")
                 url = uri(
                     if (isSnapshot)
-                        "https://nexus.commerce-experts.com/repository/maven-snapshots/"
+                        "https://nexus.commerce-experts.com/content/repositories/searchhub-public-snapshots/"
                     else
-                        "https://nexus.commerce-experts.com/repository/maven-releases/"
+                        "https://nexus.commerce-experts.com/content/repositories/searchhub-external/"
                 )
                 credentials {
                     username = System.getenv("NEXUS_USERNAME")
