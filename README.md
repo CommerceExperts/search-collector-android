@@ -42,7 +42,7 @@ dependencyResolutionManagement {
 }
 ```
 
-Artifacts are hosted on the internal Commerce Experts Nexus. If the repository requires authentication, add a `credentials { username = ...; password = ... }` block with a Nexus user or API token.
+Artifacts are hosted on the Commerce Experts Nexus. 
 
 ```kotlin
 // build.gradle.kts (app module)
