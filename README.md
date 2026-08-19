@@ -36,30 +36,21 @@
 dependencyResolutionManagement {
     repositories {
         maven {
-            url = uri("https://maven.pkg.github.com/CommerceExperts/search-collector-android")
-            credentials {
-                username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
-                password = providers.gradleProperty("gpr.token").orNull ?: System.getenv("GITHUB_TOKEN")
-            }
+            url = uri("https://nexus.commerce-experts.com/content/repositories/searchhub-external/")
         }
     }
 }
 ```
 
-A GitHub token with `read:packages` permission is required. Add it to `~/.gradle/gradle.properties`:
-
-```properties
-gpr.user=YOUR_GITHUB_USERNAME
-gpr.token=YOUR_GITHUB_TOKEN
-```
+Artifacts are hosted on the Commerce Experts Nexus. 
 
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("io.searchhub:sc-android:0.0.2")
+    implementation("io.searchhub:search-collector-android:0.5.0")
 
     // Optional: background flush
-    implementation("io.searchhub:sc-android-workmanager:0.0.2")
+    implementation("io.searchhub:search-collector-android-workmanager:0.5.0")
 }
 ```
 
