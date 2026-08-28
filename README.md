@@ -47,10 +47,10 @@ Artifacts are hosted on the Commerce Experts Nexus.
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("io.searchhub:search-collector-android:0.5.0")
+    implementation("io.searchhub:search-collector-android:0.5.1")
 
     // Optional: background flush
-    implementation("io.searchhub:search-collector-android-workmanager:0.5.0")
+    implementation("io.searchhub:search-collector-android-workmanager:0.5.1")
 }
 ```
 
