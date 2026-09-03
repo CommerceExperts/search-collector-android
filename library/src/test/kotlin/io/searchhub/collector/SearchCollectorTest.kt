@@ -107,16 +107,28 @@ class SearchCollectorTest {
     // --- reconfigure ---
 
     @Test
-    fun `configure called twice disposes previous instance`() = runTest {
+    fun `configure called twice gracefully flushes the old instance without leaking into the new one`() = runTest {
+        // Reconfigure races gracefulDispose() (a fire-and-forget flush on a real Dispatchers.IO
+        // thread, unrelated to this test's virtual time) against whatever runs next on this
+        // thread. Asserting the old event is *absent* right after reconfigure was flaky — it
+        // only held while the background flush happened not to have finished yet. Instead, wait
+        // for it deterministically and assert on the actual guarantee: the old core's queued
+        // event is gracefully delivered via its own queue/transport, and never leaks into the
+        // new core's queue.
         val queue1 = InMemoryEventQueue(maxBatchSize = 10)
         SearchCollector.configure(makeConfig(eventQueue = queue1))
         SearchCollector.trackFiredSearch("first")
+        Thread.sleep(300) // trackFiredSearch dispatches to Dispatchers.IO; land it in queue1
+        // before reconfiguring races gracefulDispose() against it.
 
         val queue2 = InMemoryEventQueue(maxBatchSize = 10)
         SearchCollector.configure(makeConfig(eventQueue = queue2))
+        Thread.sleep(300) // gracefulDispose() flushes the old core on Dispatchers.IO; give it time
         SearchCollector.flush()
 
-        assertEquals(0, sentBatches.size)
+        assertEquals(1, sentBatches.size)
+        val event = sentBatches[0][0] as SearchCollectorEvent.FiredSearch
+        assertEquals("first", event.keywords)
         assertEquals(0, queue2.drain().size)
     }
 
