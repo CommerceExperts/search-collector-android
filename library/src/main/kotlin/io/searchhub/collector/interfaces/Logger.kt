@@ -30,17 +30,22 @@ internal fun createFilteredLogger(base: Logger, minLevel: LogLevel): Logger {
     val min = priority[minLevel]!!
     // Guards every call so a throwing custom Logger can never crash tracking.
     return object : Logger {
-        override fun debug(msg: String, data: Any?) { if (priority[LogLevel.DEBUG]!! >= min) safely { base.debug(msg, data) } }
-        override fun info(msg: String, data: Any?) { if (priority[LogLevel.INFO]!! >= min) safely { base.info(msg, data) } }
-        override fun warn(msg: String, data: Any?) { if (priority[LogLevel.WARN]!! >= min) safely { base.warn(msg, data) } }
-        override fun error(msg: String, data: Any?) { if (priority[LogLevel.ERROR]!! >= min) safely { base.error(msg, data) } }
+        override fun debug(msg: String, data: Any?) { if (priority[LogLevel.DEBUG]!! >= min) safely(msg) { base.debug(msg, data) } }
+        override fun info(msg: String, data: Any?) { if (priority[LogLevel.INFO]!! >= min) safely(msg) { base.info(msg, data) } }
+        override fun warn(msg: String, data: Any?) { if (priority[LogLevel.WARN]!! >= min) safely(msg) { base.warn(msg, data) } }
+        override fun error(msg: String, data: Any?) { if (priority[LogLevel.ERROR]!! >= min) safely(msg) { base.error(msg, data) } }
     }
 }
 
-private inline fun safely(block: () -> Unit) {
+/**
+ * A broken custom Logger must never break event tracking — but silently discarding what it
+ * threw would erase precisely the errors a developer needs to see, and hide the fact that their
+ * own Logger is broken. Fall back to consoleLogger for that one line instead of swallowing it.
+ */
+private inline fun safely(originalMsg: String, block: () -> Unit) {
     try {
         block()
-    } catch (_: Exception) {
-        // A broken custom Logger must never break event tracking.
+    } catch (e: Exception) {
+        android.util.Log.e("SearchCollector", "Custom Logger threw while logging: \"$originalMsg\"", e)
     }
 }
