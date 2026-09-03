@@ -247,6 +247,7 @@ internal class SearchCollectorCore(
     ) {
         val query = formatQuery(keywords)
         trailStore.register(productId, query, TrailType.MAIN)
+        logger.debug("Trail registered", "product=$productId type=MAIN query=$query")
         val session = getSession()
         enqueue(
             SearchCollectorEvent.Product(
@@ -272,6 +273,7 @@ internal class SearchCollectorCore(
     ) {
         val query = formatQuery(keywords)
         trailStore.register(productId, query, TrailType.ASSOCIATED)
+        logger.debug("Trail registered", "product=$productId type=ASSOCIATED query=$query")
         val session = getSession()
         enqueue(
             SearchCollectorEvent.AssociatedProduct(
@@ -296,6 +298,9 @@ internal class SearchCollectorCore(
         ref: String = "",
     ) {
         val trail = trailStore.get(productId)
+        if (trail == null) {
+            logger.debug("trackBasket: no trail found for product=$productId — sending without attribution")
+        }
         val session = getSession()
         enqueue(
             SearchCollectorEvent.Basket(
@@ -321,6 +326,9 @@ internal class SearchCollectorCore(
         val session = getSession()
         for (product in products) {
             val trail = trailStore.get(product.id)
+            if (trail == null) {
+                logger.debug("trackCheckout: no trail found for product=${product.id} — sending without attribution")
+            }
             enqueue(
                 SearchCollectorEvent.Checkout(
                     timestamp = timestampMs,
@@ -340,26 +348,41 @@ internal class SearchCollectorCore(
 
     suspend fun registerTrail(key: String, query: String, trailType: TrailType) {
         trailStore.register(key, query, trailType)
+        logger.debug("Trail manually registered", "key=$key type=$trailType query=$query")
     }
 
     suspend fun copyTrail(fromProductId: String, toProductId: String) {
-        val trail = trailStore.get(fromProductId) ?: return
+        val trail = trailStore.get(fromProductId)
+        if (trail == null) {
+            logger.debug("copyTrail: no trail found for source product=$fromProductId — nothing copied")
+            return
+        }
         trailStore.register(toProductId, trail.query, trail.type)
+        logger.debug("Trail copied", "from=$fromProductId to=$toProductId query=${trail.query}")
     }
 
     suspend fun flush() {
         if (!flushMutex.tryLock()) {
             // A flush is already in progress — wait for it
+            logger.debug("Flush already in progress — waiting for it to finish")
             flushMutex.withLock { }
             return
         }
         try {
             eventQueue.transactionalDrain { events ->
-                if (events.isEmpty()) return@transactionalDrain
+                if (events.isEmpty()) {
+                    logger.debug("Flush: queue empty, nothing to send")
+                    return@transactionalDrain
+                }
                 val batches = createBatches(events)
+                logger.debug("Flush: sending ${events.size} event(s) in ${batches.size} batch(es)")
                 batches.map { batch ->
                     scope.async { transport.send(batch) }
                 }.awaitAll()
+                // "Completed" not "succeeded": transport.send() doesn't surface per-batch HTTP
+                // status here — a non-2xx response is reported by the transport itself (WARN),
+                // not treated as a thrown failure, so it wouldn't otherwise reach this line.
+                logger.debug("Flush: completed for ${events.size} event(s) in ${batches.size} batch(es)")
             }
         } catch (e: CancellationException) {
             throw e
@@ -387,6 +410,7 @@ internal class SearchCollectorCore(
     internal suspend fun activateDebugSession(token: String) {
         flushMutex.withLock {
             debugSessionToken = token
+            logger.info("Debug session activated")
             if (debugCapable != null) {
                 debugCapable.setDebugActive(true)
             } else {
@@ -398,6 +422,7 @@ internal class SearchCollectorCore(
     internal suspend fun deactivateDebugSession() {
         flushMutex.withLock {
             debugSessionToken = null
+            logger.info("Debug session deactivated")
             debugCapable?.setDebugActive(false)
         }
     }
@@ -408,8 +433,12 @@ internal class SearchCollectorCore(
     }
 
     private fun enqueue(event: SearchCollectorEvent) {
+        // Logs the event type only, not the full event — it can carry raw user search
+        // keywords and session id, which shouldn't end up in the system log by default.
+        logger.debug("Enqueueing ${event::class.simpleName}")
         val shouldFlush = eventQueue.push(event)
         if (shouldFlush) {
+            logger.debug("Queue full — triggering immediate flush")
             scope.launch {
                 runCatching { flush() }.onFailure { err ->
                     logger.error("Auto-flush on queue full failed", err)

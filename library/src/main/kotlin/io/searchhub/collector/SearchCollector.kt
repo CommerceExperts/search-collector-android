@@ -23,6 +23,7 @@ import io.searchhub.collector.interfaces.createFilteredLogger
 import io.searchhub.collector.model.BufferedEventsTimestamp
 import io.searchhub.collector.model.CheckoutProduct
 import io.searchhub.collector.model.DependencyOverrides
+import io.searchhub.collector.model.LogLevel
 import io.searchhub.collector.model.ProductPosition
 import io.searchhub.collector.model.SearchAction
 import io.searchhub.collector.model.SearchCollectorConfig
@@ -67,8 +68,11 @@ object SearchCollector {
 
     private val pendingActions = ConcurrentLinkedQueue<PendingAction>()
 
+    // Matches SearchCollectorConfig's default logLevel (ERROR) so pre-configure() log calls
+    // (e.g. buffering, disable(), setNavContext()) are silent by default, consistent with the
+    // eventual configured behavior — not the unfiltered fallback used only to avoid a null logger.
     @Volatile
-    private var logger: Logger = consoleLogger
+    private var logger: Logger = createFilteredLogger(consoleLogger, LogLevel.ERROR)
 
     /**
      * Configure and initialize the collector. Must be called before events can be sent.
@@ -77,9 +81,14 @@ object SearchCollector {
      */
     @JvmStatic
     fun configure(config: SearchCollectorConfig) {
+        val reconfiguring = core != null || pendingCore != null
         isDisabled = false
         maxPendingActions = config.queueSettings.maxPendingActions
         logger = createFilteredLogger(config.logger ?: consoleLogger, config.logLevel)
+        logger.info(
+            if (reconfiguring) "Reconfiguring SearchCollector — disposing previous instance" else "Configuring SearchCollector",
+            "channel=${config.channel} logLevel=${config.logLevel}",
+        )
 
         val appContext = config.context.applicationContext
         this.appContext = appContext
@@ -98,6 +107,7 @@ object SearchCollector {
                     it.enabled ?: (Build.VERSION.CODENAME != "REL")
                 } ?: false,
                 debugEndpoint = config.debugRouting?.debugEndpoint,
+                logger = logger,
             )
         val sessionStore = config.overrides.sessionStore
             ?: SharedPreferencesSessionStore(appContext, config.sessionLifetimeMs)
@@ -163,6 +173,9 @@ object SearchCollector {
         useOriginal: Boolean,
         newCore: SearchCollectorCore
     ) {
+        if (actions.isNotEmpty()) {
+            logger.debug("Replaying ${actions.size} buffered pre-configure event(s)", "useOriginalTimestamp=$useOriginal")
+        }
         for (action in actions) {
             val ts = if (useOriginal) action.timestamp else System.currentTimeMillis()
             runCatching { action.block(newCore, ts, action.url, action.referrer) }
@@ -180,6 +193,7 @@ object SearchCollector {
     @JvmStatic
     @JvmOverloads
     fun setNavContext(url: String, referrer: String = "") {
+        logger.debug("Nav context updated", "url=$url referrer=$referrer")
         cachedContext.set(url to referrer)
     }
 
@@ -192,6 +206,7 @@ object SearchCollector {
     fun disable() {
         isDisabled = true
         pendingActions.clear()
+        logger.info("SearchCollector disabled — pending events cleared, further calls ignored until configure()")
     }
 
     /**
@@ -414,7 +429,12 @@ object SearchCollector {
     /** Force-send all queued events immediately. Suspends until the flush is complete. */
     @JvmStatic
     suspend fun flush() {
-        core?.flush()
+        val c = core
+        if (c == null) {
+            logger.debug("flush() called before configure() — no-op")
+            return
+        }
+        c.flush()
     }
 
     /**
@@ -423,7 +443,11 @@ object SearchCollector {
      */
     @JvmStatic
     fun flushAsync() {
-        val c = core ?: return
+        val c = core
+        if (c == null) {
+            logger.debug("flushAsync() called before configure() — no-op")
+            return
+        }
         c.launch { c.flush() }
     }
 
@@ -435,6 +459,7 @@ object SearchCollector {
     @JvmStatic
     @JvmOverloads
     fun reset(clearStorage: Boolean = false) {
+        logger.info("Resetting SearchCollector", "clearStorage=$clearStorage")
         isDisabled = false
         cachedContext.set("" to "")
         pendingCore?.dispose()
@@ -462,7 +487,10 @@ object SearchCollector {
     }
 
     private fun fireAndForget(block: suspend (SearchCollectorCore, Long, String, String) -> Unit) {
-        if (isDisabled) return
+        if (isDisabled) {
+            logger.debug("Call ignored — SearchCollector.disable() is active")
+            return
+        }
         val ts = System.currentTimeMillis()
         val (url, ref) = cachedContext.get()
         val currentCore = core
@@ -470,7 +498,11 @@ object SearchCollector {
             currentCore.launch { block(currentCore, ts, url, ref) }
         } else {
             pendingActions.add(PendingAction(ts, url, ref, block))
-            if (pendingActions.size > maxPendingActions) pendingActions.poll()
+            logger.debug("Buffering pre-configure event", "pending=${pendingActions.size}/$maxPendingActions")
+            if (pendingActions.size > maxPendingActions) {
+                pendingActions.poll()
+                logger.warn("Pre-configure buffer full (max=$maxPendingActions) — oldest buffered event dropped")
+            }
         }
     }
 }
