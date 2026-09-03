@@ -118,8 +118,9 @@ class SearchCollectorTest {
         val queue1 = InMemoryEventQueue(maxBatchSize = 10)
         SearchCollector.configure(makeConfig(eventQueue = queue1))
         SearchCollector.trackFiredSearch("first")
-        Thread.sleep(300) // trackFiredSearch dispatches to Dispatchers.IO; land it in queue1
+        // trackFiredSearch dispatches to Dispatchers.IO — wait for it to land in queue1
         // before reconfiguring races gracefulDispose() against it.
+        Thread.sleep(300)
 
         val queue2 = InMemoryEventQueue(maxBatchSize = 10)
         SearchCollector.configure(makeConfig(eventQueue = queue2))
