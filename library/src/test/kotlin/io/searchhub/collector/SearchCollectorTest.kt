@@ -107,16 +107,22 @@ class SearchCollectorTest {
     // --- reconfigure ---
 
     @Test
-    fun `configure called twice disposes previous instance`() = runTest {
+    fun `configure called twice gracefully flushes the old instance without leaking into the new one`() = runTest {
+        // gracefulDispose() flushes on a real Dispatchers.IO thread; wait for it deterministically
+        // instead of asserting it "hasn't happened yet" (flaky).
         val queue1 = InMemoryEventQueue(maxBatchSize = 10)
         SearchCollector.configure(makeConfig(eventQueue = queue1))
         SearchCollector.trackFiredSearch("first")
+        Thread.sleep(300) // let it land in queue1 before reconfiguring races gracefulDispose()
 
         val queue2 = InMemoryEventQueue(maxBatchSize = 10)
         SearchCollector.configure(makeConfig(eventQueue = queue2))
+        Thread.sleep(300) // gracefulDispose() flushes the old core on Dispatchers.IO; give it time
         SearchCollector.flush()
 
-        assertEquals(0, sentBatches.size)
+        assertEquals(1, sentBatches.size)
+        val event = sentBatches[0][0] as SearchCollectorEvent.FiredSearch
+        assertEquals("first", event.keywords)
         assertEquals(0, queue2.drain().size)
     }
 
