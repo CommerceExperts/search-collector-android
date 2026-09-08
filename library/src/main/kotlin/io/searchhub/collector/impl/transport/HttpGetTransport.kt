@@ -3,8 +3,11 @@ package io.searchhub.collector.impl.transport
 import android.net.Uri
 import android.os.Build
 import android.util.Base64
+import io.searchhub.collector.interfaces.Logger
 import io.searchhub.collector.interfaces.Transport
+import io.searchhub.collector.interfaces.silentLogger
 import io.searchhub.collector.model.SearchCollectorEvent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -23,6 +26,7 @@ class HttpGetTransport(
     private val fifo: Boolean = false,
     private val connectTimeoutMs: Int = 10_000,
     private val readTimeoutMs: Int = 10_000,
+    private val logger: Logger = silentLogger,
 ) : Transport {
 
     private val json = Json { encodeDefaults = true }
@@ -45,8 +49,17 @@ class HttpGetTransport(
                 connection.readTimeout = readTimeoutMs
                 connection.instanceFollowRedirects = false
                 connection.connect()
-                // Fire-and-forget: we only care about establishing the connection
-                connection.responseCode
+                val responseCode = connection.responseCode
+                if (responseCode in 200..299) {
+                    logger.debug("Sent ${events.size} event(s) to $queueUrl", "HTTP $responseCode")
+                } else {
+                    logger.warn("Unexpected response sending ${events.size} event(s) to $queueUrl", "HTTP $responseCode")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.error("Failed to send ${events.size} event(s) to $queueUrl", e)
+                throw e
             } finally {
                 connection.disconnect()
             }
