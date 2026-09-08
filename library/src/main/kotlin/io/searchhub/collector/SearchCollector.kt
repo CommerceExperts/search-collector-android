@@ -68,11 +68,9 @@ object SearchCollector {
 
     private val pendingActions = ConcurrentLinkedQueue<PendingAction>()
 
-    // Matches SearchCollectorConfig's default logLevel (ERROR) so pre-configure() log calls
-    // (e.g. buffering, disable(), setNavContext()) are silent by default, consistent with the
-    // eventual configured behavior — not the unfiltered fallback used only to avoid a null logger.
+    // WARN by default so the pre-configure buffer-overflow warning below isn't silenced.
     @Volatile
-    private var logger: Logger = createFilteredLogger(consoleLogger, LogLevel.ERROR)
+    private var logger: Logger = createFilteredLogger(consoleLogger, LogLevel.WARN)
 
     /**
      * Configure and initialize the collector. Must be called before events can be sent.
