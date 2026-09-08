@@ -2,6 +2,10 @@ package io.searchhub.collector.interfaces
 
 import io.searchhub.collector.model.LogLevel
 
+/**
+ * Implementations must be fast and non-blocking — some calls run synchronously on the
+ * caller's thread (e.g. the UI thread, via [io.searchhub.collector.SearchCollector.setNavContext]).
+ */
 interface Logger {
     fun debug(msg: String, data: Any? = null)
     fun info(msg: String, data: Any? = null)
@@ -37,11 +41,8 @@ internal fun createFilteredLogger(base: Logger, minLevel: LogLevel): Logger {
     }
 }
 
-/**
- * A broken custom Logger must never break event tracking — but silently discarding what it
- * threw would erase precisely the errors a developer needs to see, and hide the fact that their
- * own Logger is broken. Fall back to consoleLogger for that one line instead of swallowing it.
- */
+// Falls back to Log.e directly (not consoleLogger.error(), which would lose the stack trace)
+// so a broken Logger doesn't crash tracking and doesn't vanish without a trace either.
 private inline fun safely(originalMsg: String, block: () -> Unit) {
     try {
         block()
