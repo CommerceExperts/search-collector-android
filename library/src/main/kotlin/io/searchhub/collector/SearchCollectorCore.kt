@@ -431,8 +431,7 @@ internal class SearchCollectorCore(
     }
 
     private fun enqueue(event: SearchCollectorEvent) {
-        // Type only — the full event carries raw search keywords and session id.
-        logger.debug("Enqueueing ${event::class.simpleName}")
+        logger.debug("Enqueueing ${event.type}", redactSession(event.toString()))
         val shouldFlush = eventQueue.push(event)
         if (shouldFlush) {
             logger.debug("Queue full — triggering immediate flush")
@@ -443,6 +442,10 @@ internal class SearchCollectorCore(
             }
         }
     }
+
+    // Strips the session id out of a SearchCollectorEvent's toString() before it's logged (GDPR).
+    private fun redactSession(eventString: String): String =
+        eventString.replace(Regex("session=[^,]*"), "session=<redacted>")
 
     private fun startAutoFlush() {
         autoFlushJob = scope.launch {
